@@ -1,11 +1,8 @@
-## My Project
+## Amazon Kinesis Video Streams WebRTC SDK Espressif Port
 
-TODO: Fill this README out!
+Placeholder for the power-optimized WebRTC application: https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/tree/beta-reference-esp-port
 
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
+Coming soon
 
 ## Security
 

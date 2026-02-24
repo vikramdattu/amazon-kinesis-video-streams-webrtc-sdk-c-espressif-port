@@ -1112,9 +1112,58 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
 
     switch (pWebRtcMessage->message_type) {
         case WEBRTC_MESSAGE_TYPE_OFFER:
-            // Check if we already have an ongoing master session with the same peer
-            CHK_ERR(!peerConnectionFound, STATUS_INVALID_OPERATION, "Peer connection %s is in progress",
-                    pWebRtcMessage->peer_client_id);
+            if (peerConnectionFound) {
+                /*
+                 * Re-offer / re-negotiation handling: a second offer arrived from the same client_id.
+                 * Decide between true re-negotiation (reuse existing session) and session
+                 * replacement (tear down old, create new) based on the session's terminate flag.
+                 */
+                if (!ATOMIC_LOAD_BOOL(&pAppWebRTCSession->terminateFlag)) {
+                    /* True re-negotiation: connection is still active. Re-use existing session
+                     * and process the new offer on it via the pluggable interface. */
+                    ESP_LOGI(TAG, "Re-negotiation: processing re-offer from peer %s on existing connection",
+                             pWebRtcMessage->peer_client_id);
+
+                    pc_interface = gWebRtcAppConfig.peer_connection_if;
+                    if (pc_interface != NULL && pAppWebRTCSession->interface_session_handle != NULL) {
+                        message_status = pc_interface->send_message(pAppWebRTCSession->interface_session_handle, pWebRtcMessage);
+                        if (message_status != WEBRTC_STATUS_SUCCESS) {
+                            ESP_LOGE(TAG, "Failed to process re-offer via interface: 0x%08x", message_status);
+                            CHK(FALSE, STATUS_INTERNAL_ERROR);
+                        }
+                        DLOGD("Successfully processed re-offer for peer: %s", pWebRtcMessage->peer_client_id);
+                    } else {
+                        ESP_LOGE(TAG, "No interface available for re-negotiation with peer %s",
+                                 pWebRtcMessage->peer_client_id);
+                        CHK(FALSE, STATUS_INVALID_OPERATION);
+                    }
+                    break;
+                }
+
+                /* Session replacement: the old connection is terminated (DISCONNECTED/FAILED/CLOSED).
+                 * Clean up the old session and fall through to create a new one. */
+                ESP_LOGI(TAG, "Session replacement: replacing terminated session for peer %s",
+                         pWebRtcMessage->peer_client_id);
+
+                // Remove old session from hash table
+                CHK_STATUS(hashTableRemove(pSampleConfiguration->pRtcPeerConnectionForRemoteClient, clientIdHash));
+
+                // Remove old session from session list and free it
+                MUTEX_LOCK(pSampleConfiguration->streamingSessionListReadLock);
+                for (UINT32 idx = 0; idx < pSampleConfiguration->streamingSessionCount; ++idx) {
+                    if (pSampleConfiguration->webrtcSessionList[idx] == pAppWebRTCSession) {
+                        pSampleConfiguration->streamingSessionCount--;
+                        pSampleConfiguration->webrtcSessionList[idx] =
+                            pSampleConfiguration->webrtcSessionList[pSampleConfiguration->streamingSessionCount];
+                        break;
+                    }
+                }
+                MUTEX_UNLOCK(pSampleConfiguration->streamingSessionListReadLock);
+
+                freeAppWebRTCSession(&pAppWebRTCSession);
+                pAppWebRTCSession = NULL;
+                // Fall through to create a new session below
+            }
 
             /*
              * Create new streaming session for each offer, then insert the client id and streaming session into

@@ -21,7 +21,7 @@ network_coprocessor (wrapper component)
 This component is automatically included when building the `network_adapter` example:
 
 ```bash
-cd esp_port/examples/network_adapter
+cd examples/network_adapter
 idf.py build
 ```
 

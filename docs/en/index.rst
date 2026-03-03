@@ -21,3 +21,5 @@ Welcome to the WebRTC Camera SDK documentation by Espressif. This camera solutio
    Developer Guide <api-reference/index>
    Examples <api-reference/examples>
    C API Documentation <c-api-reference/index>
+   Browser Compatibility <browser_compatibility>
+   ESP32-P4 Notes <esp32p4_notes>

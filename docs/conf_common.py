@@ -47,15 +47,15 @@ else:
 # Note: MyST parser for markdown is not available in ESP-docs environment
 
 # link roles config
-github_repo = 'aws-samples/amazon-kinesis-video-streams-webrtc-sdk-c'
+github_repo = 'awslabs/amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port'
 
 # context used by sphinx_idf_theme
-html_context['github_user'] = 'aws-samples'
-html_context['github_repo'] = 'amazon-kinesis-video-streams-webrtc-sdk-c'
+html_context['github_user'] = 'awslabs'
+html_context['github_repo'] = 'amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port'
 html_static_path = ['../_static']
 
 # Extra options required by sphinx_idf_theme
-project_slug = 'amazon-kinesis-video-streams-webrtc-sdk-c'
+project_slug = 'amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port'
 
 idf_targets = ['esp32', 'esp32s3', 'esp32c2', 'esp32c3']
 languages = ['en']

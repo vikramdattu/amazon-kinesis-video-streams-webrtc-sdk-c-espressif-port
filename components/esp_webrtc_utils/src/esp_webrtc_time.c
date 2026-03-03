@@ -16,6 +16,7 @@
 
 #if ENABLE_STREAMING_ONLY && CONFIG_IDF_TARGET_ESP32P4
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>

@@ -1,0 +1,468 @@
+/*
+ * SPDX-FileCopyrightText: 2024 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_opus_enc.h"
+#include "webrtc_mem_utils.h"
+
+#include "OpusFrameGrabber.h"
+
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "bsp/esp-bsp.h"
+#include "esp_codec_dev.h"
+#endif
+static const char *TAG = "OpusFrameGrabber";
+
+#define SAMPLE_RATE 16000
+#define CHANNELS 1
+#define BITRATE 16000
+
+typedef struct {
+    QueueHandle_t frame_queue;
+    TaskHandle_t encoder_task_handle;
+    void *encoder_handle;
+    StaticTask_t *task_buffer;
+    void *task_stack;
+    bool encoder_initialized;
+    bool running;
+    SemaphoreHandle_t run_semaphore;
+    uint8_t *inbuf;
+    uint8_t *outbuf;
+    int insize;
+    int outsize;
+} opus_encoder_data_t;
+
+static opus_encoder_data_t s_enc_data = {0};
+#if CONFIG_IDF_TARGET_ESP32P4
+static esp_codec_dev_handle_t mic_codec_dev = NULL;
+#endif
+
+#ifndef CONFIG_IDF_TARGET_ESP32P4
+#include "driver/i2s_std.h"
+#include "driver/gpio.h"
+
+static i2s_chan_handle_t i2s_rx_chan = NULL;
+
+static void i2s_init(void)
+{
+    // Start listening for audio: MONO @ 16KHz
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    chan_cfg.dma_desc_num = 3;
+    chan_cfg.dma_frame_num = 300;
+    chan_cfg.auto_clear = true;
+
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = GPIO_NUM_NC,
+            .ws = GPIO_NUM_NC,
+            .dout = I2S_GPIO_UNUSED,
+            .din = GPIO_NUM_NC,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+
+#if CONFIG_IDF_TARGET_ESP32S3
+    std_cfg.gpio_cfg.bclk = GPIO_NUM_41;    // IIS_SCLK
+    std_cfg.gpio_cfg.ws = GPIO_NUM_42;      // IIS_LCLK
+    std_cfg.gpio_cfg.din = GPIO_NUM_2;      // IIS_DOUT
+// #define READ_SAMPLE_SIZE_30  1
+#if READ_SAMPLE_SIZE_30
+    std_cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO);
+#endif
+#else
+    // For esp32-eye and other non-S3 targets
+    std_cfg.gpio_cfg.bclk = GPIO_NUM_26;    // IIS_SCLK
+    std_cfg.gpio_cfg.ws = GPIO_NUM_32;      // IIS_LCLK
+    std_cfg.gpio_cfg.din = GPIO_NUM_33;     // IIS_DOUT
+    // Use I2S_NUM_1 for esp32-eye
+    chan_cfg.id = I2S_NUM_1;
+#endif
+
+    esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &i2s_rx_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error in i2s_new_channel: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = i2s_channel_init_std_mode(i2s_rx_chan, &std_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error in i2s_channel_init_std_mode: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = i2s_channel_enable(i2s_rx_chan);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error in i2s_channel_enable: %s", esp_err_to_name(ret));
+    }
+}
+#endif
+
+static void audio_encoder_task(void *arg)
+{
+    void *enc_handle = arg;
+    ESP_LOGD(TAG, "Audio encoder task started (singleton mode - runs continuously)");
+
+    while (1) {
+        // Check if encoding should be running
+        if (!s_enc_data.running) {
+            ESP_LOGD(TAG, "Audio encoder paused, waiting for start signal...");
+            // Wait for start signal (blocking)
+            xSemaphoreTake(s_enc_data.run_semaphore, portMAX_DELAY);
+            ESP_LOGD(TAG, "Audio encoder resumed");
+        }
+
+        // Encode process
+        esp_audio_enc_in_frame_t in_frame = { 0 };
+        esp_audio_enc_out_frame_t out_frame = { 0 };
+
+        in_frame.buffer = s_enc_data.inbuf;
+        in_frame.len = s_enc_data.insize;
+        out_frame.buffer = s_enc_data.outbuf;
+        out_frame.len = s_enc_data.outsize;
+
+#define I2S_READ_WAIT_MS CONFIG_AUDIO_QUEUE_WAIT_MS
+#if CONFIG_IDF_TARGET_ESP32P4
+        if (mic_codec_dev) {
+            esp_err_t read_ret = esp_codec_dev_read(mic_codec_dev, s_enc_data.inbuf, s_enc_data.insize);
+            if (read_ret != ESP_OK) {
+                ESP_LOGE(TAG, "esp_codec_dev_read error: %s", esp_err_to_name(read_ret));
+                vTaskDelay(pdMS_TO_TICKS(I2S_READ_WAIT_MS));
+                continue;
+            }
+        } else {
+            ESP_LOGE(TAG, "Microphone codec device not initialized");
+            vTaskDelay(pdMS_TO_TICKS(I2S_READ_WAIT_MS));
+            continue;
+        }
+#else // CONFIG_IDF_TARGET_ESP32P4
+        esp_err_t i2s_ret = ESP_OK;
+        size_t bytes_read = 0;
+        size_t bytes_to_read = s_enc_data.insize;
+#if READ_SAMPLE_SIZE_30
+        bytes_to_read = s_enc_data.insize * 2;
+#endif
+        i2s_ret = i2s_channel_read(i2s_rx_chan, (void*)s_enc_data.inbuf, bytes_to_read, &bytes_read, pdMS_TO_TICKS(I2S_READ_WAIT_MS));
+        if (i2s_ret != ESP_OK) {
+            ESP_LOGE(TAG, "I2S read error: %s", esp_err_to_name(i2s_ret));
+            vTaskDelay(pdMS_TO_TICKS(I2S_READ_WAIT_MS));
+            continue;
+        }
+#if READ_SAMPLE_SIZE_30
+        // rescale the data (Actual data is 30 bits, use higher 16 bits out of those)
+        for (int i = 0; i < bytes_read / 4; ++i) {
+            ((uint16_t *) s_enc_data.inbuf)[i] = (((uint32_t *) s_enc_data.inbuf)[i] >> 14) & 0xffff;
+        }
+        bytes_read = bytes_read / 2; // Adjust bytes_read to reflect 16-bit samples after rescaling
+#endif
+#endif
+
+#define OPUS_ENCODE_WAIT_MS CONFIG_AUDIO_QUEUE_WAIT_MS
+
+        esp_opus_out_buf_t opus_frame = { 0 };
+        esp_audio_err_t ret = ESP_AUDIO_ERR_OK;
+        ret = esp_opus_enc_process(enc_handle, &in_frame, &out_frame);
+        if (ret != ESP_AUDIO_ERR_OK) {
+            ESP_LOGE(TAG, "audio encoder process failed.");
+            vTaskDelay(pdMS_TO_TICKS(OPUS_ENCODE_WAIT_MS));
+            continue;
+        }
+        opus_frame.len = out_frame.encoded_bytes;
+        opus_frame.buffer = heap_caps_calloc(1, opus_frame.len, MALLOC_CAP_SPIRAM);
+        if (!opus_frame.buffer) {
+            ESP_LOGE(TAG, "Failed to alloc opus_frame.buffer(size %d)", (int) opus_frame.len);
+            vTaskDelay(pdMS_TO_TICKS(OPUS_ENCODE_WAIT_MS));
+            continue;
+        }
+        memcpy(opus_frame.buffer, out_frame.buffer, opus_frame.len);
+
+        /* Insert it into the queue */
+        if (xQueueSend(s_enc_data.frame_queue, &opus_frame, pdMS_TO_TICKS(OPUS_ENCODE_WAIT_MS)) != pdTRUE) {
+            heap_caps_free(opus_frame.buffer);
+        }
+    }
+
+    // This point should never be reached in singleton mode
+    ESP_LOGE(TAG, "Audio encoder task unexpectedly exited!");
+}
+
+/* returns handle */
+void *opus_encoder_init_internal(audio_capture_config_t *config)
+{
+    if (config == NULL) {
+        return NULL;
+    }
+
+    // Singleton pattern: return existing handle if already initialized
+    if (s_enc_data.encoder_initialized) {
+        ESP_LOGD(TAG, "Opus encoder already initialized (singleton), returning existing handle");
+        return s_enc_data.encoder_handle;
+    }
+
+    esp_audio_err_t ret = ESP_AUDIO_ERR_OK;
+    esp_opus_enc_config_t enc_config = ESP_OPUS_ENC_CONFIG_DEFAULT();
+    enc_config.sample_rate = config->format.sample_rate;
+    enc_config.channel = config->format.channels;
+    enc_config.bitrate = config->bitrate;
+    ret = esp_opus_enc_open(&enc_config, sizeof(esp_opus_enc_config_t), &s_enc_data.encoder_handle);
+    if (ret != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "Failed to initialize Opus encoder");
+        goto cleanup;
+    }
+
+    s_enc_data.frame_queue = xQueueCreate(CONFIG_AUDIO_FRAME_QUEUE_SIZE, sizeof(esp_opus_out_buf_t));
+    if (!s_enc_data.frame_queue) {
+        ESP_LOGE(TAG, "Failed to create frame queue");
+        goto cleanup;
+    }
+
+    // Create semaphore for start/stop control
+    s_enc_data.run_semaphore = xSemaphoreCreateBinary();
+    if (!s_enc_data.run_semaphore) {
+        ESP_LOGE(TAG, "Failed to create run semaphore");
+        goto cleanup;
+    }
+
+    // Get frame sizes and allocate buffers
+    esp_opus_enc_get_frame_size(s_enc_data.encoder_handle, &s_enc_data.insize, &s_enc_data.outsize);
+#if READ_SAMPLE_SIZE_30
+    s_enc_data.inbuf = heap_caps_calloc(1, s_enc_data.insize * 2, MALLOC_CAP_SPIRAM); // 20ms mono
+#else
+    s_enc_data.inbuf = heap_caps_calloc(1, s_enc_data.insize, MALLOC_CAP_SPIRAM); // 20ms mono
+#endif
+    s_enc_data.outbuf = heap_caps_calloc(1, s_enc_data.outsize, MALLOC_CAP_SPIRAM);
+
+    if (!s_enc_data.inbuf || !s_enc_data.outbuf) {
+        ESP_LOGE(TAG, "Failed to allocate audio buffers");
+        goto cleanup;
+    }
+
+    // Initialize audio hardware
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (mic_codec_dev == NULL) {
+        /* Ensure I2C is initialized before audio codec init to avoid double initialization */
+        extern esp_err_t media_stream_i2c_init_safe(void);
+        media_stream_i2c_init_safe();
+
+        mic_codec_dev = bsp_audio_codec_microphone_init();
+        if (mic_codec_dev == NULL) {
+            ESP_LOGE(TAG, "Failed to initialize microphone codec");
+            goto cleanup;
+        }
+
+        esp_codec_dev_sample_info_t fs = {
+            .sample_rate = SAMPLE_RATE,
+            .channel = CHANNELS,
+            .bits_per_sample = 16,
+        };
+        esp_err_t ret = esp_codec_dev_open(mic_codec_dev, &fs);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to open microphone codec device: %s", esp_err_to_name(ret));
+            mic_codec_dev = NULL;
+            goto cleanup;
+        }
+
+        // Give some time for the I2S channel to be properly enabled
+        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGD(TAG, "ESP32P4 audio codec initialized");
+    }
+#else
+    i2s_init();
+#endif
+
+#define ENC_TASK_STACK_SIZE     CONFIG_AUDIO_ENCODER_TASK_STACK_SIZE
+#define ENC_TASK_PRIO           CONFIG_AUDIO_ENCODER_TASK_PRIORITY
+    s_enc_data.task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+    s_enc_data.task_stack = heap_caps_calloc(1, ENC_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM);
+    if (!s_enc_data.task_buffer || !s_enc_data.task_stack) {
+        ESP_LOGE(TAG, "Failed to allocate task buffers");
+        goto cleanup;
+    }
+
+    s_enc_data.running = false;  // Start in stopped state
+
+    s_enc_data.encoder_task_handle =
+    xTaskCreateStatic(audio_encoder_task, "audio_encoder", ENC_TASK_STACK_SIZE,
+        s_enc_data.encoder_handle, ENC_TASK_PRIO, s_enc_data.task_stack, s_enc_data.task_buffer);
+
+    s_enc_data.encoder_initialized = true;
+
+    ESP_LOGD(TAG, "Opus encoder initialized as singleton (stopped, use start() to begin)");
+    webrtc_mem_utils_print_stats(TAG);
+
+    return s_enc_data.encoder_handle;
+
+cleanup:
+    // Conditional cleanup based on what was allocated
+    if (s_enc_data.task_buffer != NULL) {
+        heap_caps_free(s_enc_data.task_buffer);
+        s_enc_data.task_buffer = NULL;
+    }
+    if (s_enc_data.task_stack != NULL) {
+        heap_caps_free(s_enc_data.task_stack);
+        s_enc_data.task_stack = NULL;
+    }
+    if (s_enc_data.inbuf != NULL) {
+        heap_caps_free(s_enc_data.inbuf);
+        s_enc_data.inbuf = NULL;
+    }
+    if (s_enc_data.outbuf != NULL) {
+        heap_caps_free(s_enc_data.outbuf);
+        s_enc_data.outbuf = NULL;
+    }
+    s_enc_data.insize = 0;
+    s_enc_data.outsize = 0;
+
+    if (s_enc_data.run_semaphore != NULL) {
+        vSemaphoreDelete(s_enc_data.run_semaphore);
+        s_enc_data.run_semaphore = NULL;
+    }
+    if (s_enc_data.frame_queue != NULL) {
+        vQueueDelete(s_enc_data.frame_queue);
+        s_enc_data.frame_queue = NULL;
+    }
+    if (s_enc_data.encoder_handle != NULL) {
+        esp_opus_enc_close(s_enc_data.encoder_handle);
+        s_enc_data.encoder_handle = NULL;
+    }
+
+    return NULL;
+}
+
+esp_opus_out_buf_t *get_opus_encoded_frame()
+{
+    esp_opus_out_buf_t *opus_frame = heap_caps_calloc(1, sizeof(esp_opus_out_buf_t), MALLOC_CAP_SPIRAM);
+    if (!opus_frame) {
+        ESP_LOGE(TAG, "Failed to allocate opus_frame");
+        return NULL;
+    }
+
+    if (xQueueReceive(s_enc_data.frame_queue, opus_frame, pdMS_TO_TICKS(CONFIG_AUDIO_QUEUE_WAIT_MS)) != pdTRUE) {
+        heap_caps_free(opus_frame);
+        return NULL;
+    }
+
+    return opus_frame;
+}
+
+esp_err_t opus_encoder_start_internal(void)
+{
+    if (!s_enc_data.encoder_initialized) {
+        ESP_LOGE(TAG, "Opus encoder not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_enc_data.running) {
+        ESP_LOGD(TAG, "Opus encoder already running");
+        return ESP_OK;
+    }
+
+    s_enc_data.running = true;
+    xSemaphoreGive(s_enc_data.run_semaphore);  // Signal encoder to start
+    ESP_LOGD(TAG, "Opus encoder started");
+
+    return ESP_OK;
+}
+
+esp_err_t opus_encoder_stop_internal(void)
+{
+    if (!s_enc_data.encoder_initialized) {
+        ESP_LOGE(TAG, "Opus encoder not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!s_enc_data.running) {
+        ESP_LOGD(TAG, "Opus encoder already stopped");
+        return ESP_OK;
+    }
+
+    s_enc_data.running = false;
+    ESP_LOGD(TAG, "Opus encoder stopped");
+
+    return ESP_OK;
+}
+
+esp_err_t opus_encoder_deinit_internal(void)
+{
+    if (!s_enc_data.encoder_initialized) {
+        ESP_LOGD(TAG, "Opus encoder not initialized, nothing to deinitialize");
+        return ESP_OK;
+    }
+
+    // Stop encoding first
+    opus_encoder_stop_internal();
+
+    // Drain the frame queue with limited iterations to prevent infinite loop
+    if (s_enc_data.frame_queue != NULL) {
+        ESP_LOGD(TAG, "Draining frame queue...");
+        esp_opus_out_buf_t opus_frame;
+        int drained_count = 0;
+        const int max_drain_iterations = CONFIG_AUDIO_FRAME_QUEUE_SIZE;  // Prevent infinite loop
+
+        while (xQueueReceive(s_enc_data.frame_queue, &opus_frame, 0) == pdTRUE &&
+               drained_count < max_drain_iterations) {
+            if (opus_frame.buffer) {
+                heap_caps_free(opus_frame.buffer);
+            }
+            drained_count++;
+        }
+
+        if (drained_count > 0) {
+            ESP_LOGD(TAG, "Drained %d frames from queue", drained_count);
+        }
+        if (drained_count >= max_drain_iterations) {
+            ESP_LOGI(TAG, "Reached max drain limit, queue may still contain frames");
+        }
+    }
+
+    // Singleton pattern: encoder task remains running but paused
+    ESP_LOGD(TAG, "Opus encoder is singleton - task remains paused until start() is called");
+
+    return ESP_OK;
+}
+#else
+void *opus_encoder_init_internal(audio_capture_config_t *config)
+{
+    (void) config;
+    return NULL;
+}
+
+esp_opus_out_buf_t *get_opus_encoded_frame()
+{
+  return NULL;
+}
+
+esp_err_t opus_encoder_start_internal(void)
+{
+    // No-op for unsupported targets
+    return ESP_OK;
+}
+
+esp_err_t opus_encoder_stop_internal(void)
+{
+    // No-op for unsupported targets
+    return ESP_OK;
+}
+
+esp_err_t opus_encoder_deinit_internal(void)
+{
+    // No-op for unsupported targets
+    return ESP_OK;
+}
+#endif

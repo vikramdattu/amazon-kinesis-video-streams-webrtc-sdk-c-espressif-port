@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # local components
+  network_coprocessor:
+    version: "*"
+    path: ${KVS_SDK_PATH}/components/network_coprocessor

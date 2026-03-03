@@ -1,0 +1,26 @@
+## IDF Component Manager Manifest File
+dependencies:
+
+  network_coprocessor:
+    version: "*"
+    path: ${KVS_SDK_PATH}/components/network_coprocessor
+
+  esp_webrtc_utils:
+    path: ${KVS_SDK_PATH}/components/esp_webrtc_utils
+    version: "*"
+
+  app_webrtc:
+    path: ${KVS_SDK_PATH}/components/app_webrtc
+    version: "*"
+
+  kvs_signaling:
+    path: ${KVS_SDK_PATH}/components/kvs_signaling
+    version: "*"
+
+  webrtc_bridge:
+    path: ${KVS_SDK_PATH}/components/webrtc_bridge
+    version: "*"
+
+  app_common:
+    path: ${KVS_SDK_PATH}/examples/app_common
+    version: "*"

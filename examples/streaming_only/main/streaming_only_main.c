@@ -24,12 +24,37 @@
 #include "signaling_serializer.h"
 #include "webrtc_bridge.h"
 #include "webrtc_bridge_signaling.h"
+// ice_bridge_client and esp_webrtc_time are initialized internally by bridge_signaling
+#include "bridge_cmd_defs.h"
 #include "esp_work_queue.h"
 #include "app_webrtc.h"
 #include "kvs_peer_connection.h"
+#include "esp_hosted.h"
 #include "power_save_handler.h"
+#ifdef CONFIG_SLAVE_FLASHER_ENABLE
+#include "slave_flasher.h"
+#endif
+#ifdef CONFIG_SLAVE_FLASHER_ENABLE
+static vprintf_like_t s_original_vprintf = NULL;
+
+static int custom_vprintf(const char* fmt, va_list args)
+{
+    // Print the [HOST] prefix in bright cyan color
+    printf("\033[1;36m[HOST]\033[0m ");
+
+    if (s_original_vprintf) {
+        return s_original_vprintf(fmt, args);
+    } else {
+        return vprintf(fmt, args);
+    }
+}
+#endif
 
 extern esp_err_t esp_hosted_wait_for_slave(void);
+
+#define HOST_USES_STATIC_NETIF (0)
+esp_netif_t *sta_netif;
+
 
 static const char *TAG = "streaming_only";
 
@@ -147,7 +172,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-#ifdef CONFIG_HOST_USES_STATIC_NETIF
+#if HOST_USES_STATIC_NETIF
 esp_netif_t *create_slave_sta_netif_with_static_ip(void)
 {
     ESP_LOGI(TAG, "Create netif with static IP");
@@ -159,7 +184,7 @@ esp_netif_t *create_slave_sta_netif_with_static_ip(void)
         .base = &netif_cfg,
         .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
     };
-    esp_netif_t *sta_netif = esp_netif_new(&cfg_sta);
+    sta_netif = esp_netif_new(&cfg_sta);
     ESP_LOGI(TAG, "Created slave sta netif with static IP %p", sta_netif);
     assert(sta_netif);
 
@@ -181,7 +206,11 @@ static void wifi_init_sta(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-#ifdef CONFIG_HOST_USES_STATIC_NETIF
+
+	ESP_ERROR_CHECK(esp_hosted_init());
+	ESP_ERROR_CHECK(esp_hosted_connect_to_slave());
+
+#if HOST_USES_STATIC_NETIF
     create_slave_sta_netif_with_static_ip();
 #else
     esp_netif_create_default_wifi_sta();
@@ -208,6 +237,38 @@ static void wifi_init_sta(void)
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Bridge command handlers                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Handle BRIDGE_CMD_GET_RESOLUTION from the signaling device (C6).
+ * Returns the current camera resolution.
+ *
+ * TODO: Retrieve actual resolution from media_stream / camera driver
+ *       once a public getter API is available.
+ */
+static esp_err_t handle_get_resolution(uint32_t cmd_id,
+                                       const uint8_t *req_data, size_t req_len,
+                                       uint8_t **resp_data, size_t *resp_len)
+{
+    bridge_cmd_resolution_t *res = malloc(sizeof(bridge_cmd_resolution_t));
+    if (!res) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Default resolution matching media_stream defaults.
+     * Replace with actual camera resolution query when available. */
+    res->width  = 1280;
+    res->height = 720;
+
+    ESP_LOGI("bridge_cmd", "GET_RESOLUTION -> %"PRIu32"x%"PRIu32, res->width, res->height);
+
+    *resp_data = (uint8_t *)res;
+    *resp_len  = sizeof(*res);
+    return ESP_OK;
 }
 
 static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *user_ctx)
@@ -269,6 +330,7 @@ static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *
 void app_main(void)
 {
     esp_err_t ret;
+
     WEBRTC_STATUS status;
 
     // Initialize NVS
@@ -278,6 +340,16 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+#if 0 //def CONFIG_SLAVE_FLASHER_ENABLE
+    s_original_vprintf = esp_log_set_vprintf(custom_vprintf);
+
+    ret = flash_slave();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to flash slave: %s", esp_err_to_name(ret));
+        return;
+    }
+#endif
 
     ESP_LOGI(TAG, "ESP32 WebRTC Streaming Example");
 
@@ -318,7 +390,7 @@ void app_main(void)
 #if USE_FILE_STREAM
     video_capture = media_stream_get_file_video_capture_if();
 #else
-#ifdef CONFIG_ESP_P4_CORE_BOARD
+#ifdef CONFIG_ESP_HOSTED_P4_C5_CORE_BOARD
     video_capture = media_stream_get_video_capture_if();
 #else
     video_capture = media_stream_get_video_capture_if();
@@ -402,6 +474,16 @@ void app_main(void)
 
     // Start webrtc bridge
     webrtc_bridge_start();
+
+    /* ice_bridge_client_init() is handled internally by bridge_signaling
+     * during app_webrtc_init(). Time sync response handler (esp_webrtc_time)
+     * self-registers on first use.
+     * Initialize bridge command framework and register example-specific handlers. */
+    if (bridge_cmd_init() == ESP_OK) {
+        bridge_cmd_register_handler(BRIDGE_CMD_GET_RESOLUTION, handle_get_resolution);
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize bridge command subsystem");
+    }
 
     ESP_LOGI(TAG, "Streaming example initialized, waiting for signaling messages");
 

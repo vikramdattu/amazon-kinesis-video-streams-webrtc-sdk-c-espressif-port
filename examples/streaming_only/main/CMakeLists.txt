@@ -4,4 +4,6 @@ idf_component_register(SRCS
                     INCLUDE_DIRS "."
                     REQUIRES
                         "app_common"
-                        "kvs_webrtc")
+                        "kvs_webrtc"
+                        "esp_webrtc_utils"
+                        "bridge_signaling")

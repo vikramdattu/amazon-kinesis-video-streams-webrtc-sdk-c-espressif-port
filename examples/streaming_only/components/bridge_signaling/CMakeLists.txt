@@ -1,13 +1,18 @@
 # Bridge Signaling Component (for streaming_only example)
 # Provides bridge-based signaling functionality
 
+# Set requires based on target
+set(COMPONENT_REQUIRES
+    signaling_serializer
+    webrtc_bridge
+)
+
 idf_component_register(
     SRCS
-        "bridge_signaling.c"
-        "ice_bridge_client.c"
+        "src/bridge_signaling.c"
+        "src/ice_bridge_client.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
-        signaling_serializer
-        webrtc_bridge
+        ${COMPONENT_REQUIRES}
 )

@@ -476,7 +476,8 @@ static WEBRTC_STATUS kvs_pc_create_session(void *pPeerConnectionClient,
     session->is_initiator = is_initiator;
     session->terminated = FALSE;
     session->start_time = GETTIME();
-    session->media_started = FALSE;
+    ATOMIC_STORE_BOOL(&session->media_started, FALSE);
+    session->last_kvs_state = 0;  // No state yet
     session->media_threads_started = FALSE;
     session->receive_thread_started = FALSE;
     session->receive_audio_video_tid = INVALID_TID_VALUE;
@@ -1111,13 +1112,15 @@ static VOID onConnectionStateChangeHandler(UINT64 customData, RTC_PEER_CONNECTIO
     kvs_pc_session_t *session = (kvs_pc_session_t *)HANDLE_TO_POINTER(customData);
     webrtc_peer_state_t peer_state;
 
-    ESP_LOGI(TAG, "Peer connection state change: peer=%s, KVS_state=%d",
+    ESP_LOGI(TAG, "State change: peer=%s, state=%d (1=NEW,2=CONNECTING,3=CONNECTED,4=DISCONNECTED,5=FAILED,6=CLOSED)",
              session ? session->peer_id : "unknown", newState);
 
     if (session == NULL) {
         ESP_LOGE(TAG, "CRITICAL: Invalid peer connection state callback - session is NULL!");
         return;
     }
+
+    session->last_kvs_state = (INT32)newState;
 
     // Map KVS peer connection states to WebRTC peer states
     switch (newState) {
@@ -1129,7 +1132,8 @@ static VOID onConnectionStateChangeHandler(UINT64 customData, RTC_PEER_CONNECTIO
             break;
         case RTC_PEER_CONNECTION_STATE_CONNECTED:
             peer_state = WEBRTC_PEER_STATE_CONNECTED;
-            session->media_started = TRUE;
+            ESP_LOGI(TAG, "Media started for peer=%s", session->peer_id);
+            ATOMIC_STORE_BOOL(&session->media_started, TRUE);
 
             // Start media reception for this session if needed (transmission is global)
             if (session->client->config.receive_media && !session->media_threads_started) {
@@ -1163,9 +1167,10 @@ static VOID onConnectionStateChangeHandler(UINT64 customData, RTC_PEER_CONNECTIO
         case RTC_PEER_CONNECTION_STATE_FAILED:
         case RTC_PEER_CONNECTION_STATE_CLOSED:
             peer_state = WEBRTC_PEER_STATE_DISCONNECTED;
-            session->media_started = FALSE;
+            ESP_LOGI(TAG, "Media stopped for peer=%s (state=%d)", session->peer_id, newState);
+            ATOMIC_STORE_BOOL(&session->media_started, FALSE);
 
-            ESP_LOGD(TAG, "Connection failed/disconnected for peer: %s - marking for cleanup", session->peer_id);
+            ESP_LOGI(TAG, "Connection ended for peer: %s - marking for cleanup", session->peer_id);
             session->terminated = TRUE;
 
             // Stop session-specific media reception only

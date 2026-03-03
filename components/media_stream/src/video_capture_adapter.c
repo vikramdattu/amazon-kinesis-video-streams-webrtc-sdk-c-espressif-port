@@ -130,9 +130,12 @@ esp_err_t video_capture_get_frame(video_capture_handle_t handle, video_frame_t *
         // Get a frame using the H264 API
         esp_h264_out_buf_t *h264_frame = get_h264_encoded_frame();
         if (h264_frame == NULL) {
+            ESP_LOGD(TAG, "Failed to get H264 frame: %p", h264_frame);
             free(output_frame);
             return ESP_ERR_TIMEOUT;
         }
+
+        ESP_LOGD(TAG, "H264 frame got: %p", h264_frame);
 
         // Fill in the frame data
         output_frame->buffer = h264_frame->buffer;
@@ -152,6 +155,7 @@ esp_err_t video_capture_get_frame(video_capture_handle_t handle, video_frame_t *
                 output_frame->type = VIDEO_FRAME_TYPE_OTHER;
                 break;
         }
+        ESP_LOGD(TAG, "H264 frame released");
         free(h264_frame);
     } else if (ctx->codec_type == VIDEO_CODEC_MJPEG) {
         // Get a frame using the MJPEG API

@@ -19,6 +19,7 @@
  * - Frame processing and handling
  */
 
+#include <inttypes.h>
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "kvs_media.h"
@@ -542,31 +543,37 @@ CleanupAudio:
  */
 static STATUS kvs_session_frame_callback(UINT64 callerData, PHashEntry pHashEntry)
 {
+    static UINT32 diag_drop_reason_count[8] = {0};  /* Diagnostic counters */
+    static UINT64 diag_last_log_time = 0;
     Frame* frame = (Frame*)HANDLE_TO_POINTER(callerData);
     kvs_pc_session_t* session = NULL;
     STATUS writeStatus;
 
     /* CRITICAL: Skip invalid entries gracefully to avoid aborting iteration */
     if (frame == NULL || pHashEntry == NULL) {
-        return STATUS_SUCCESS;  /* Skip invalid entry, continue iteration */
+        diag_drop_reason_count[0]++;
+        goto DiagLog;
     }
 
     session = (kvs_pc_session_t*)HANDLE_TO_POINTER(pHashEntry->value);
 
     /* CRITICAL: Skip invalid/terminated sessions gracefully */
     if (session == NULL || session->terminated) {
-        return STATUS_SUCCESS;  /* Skip invalid session, continue iteration */
+        diag_drop_reason_count[1]++;
+        goto DiagLog;
     }
 
     /* CRITICAL: Skip sessions with invalid peer connection or client */
     if (session->peer_connection == NULL || session->client == NULL) {
-        return STATUS_SUCCESS;  /* Skip invalid session, continue iteration */
+        diag_drop_reason_count[2]++;
+        goto DiagLog;
     }
 
     /* CRITICAL: Only send frames if peer connection is established (CONNECTED state) */
     /* media_started is set to TRUE when peer connection reaches CONNECTED state */
-    if (!session->media_started) {
-        return STATUS_SUCCESS;  /* Skip session - peer connection not established yet */
+    if (!ATOMIC_LOAD_BOOL(&session->media_started)) {
+        diag_drop_reason_count[3]++;
+        goto DiagLog;
     }
 
     // Determine which transceiver to use based on frame track ID
@@ -580,11 +587,33 @@ static STATUS kvs_session_frame_callback(UINT64 callerData, PHashEntry pHashEntr
     /* CRITICAL: Only call writeFrame if transceiver is valid and session is still active */
     if (transceiver != NULL && !session->terminated && session->peer_connection != NULL) {
         writeStatus = writeFrame(transceiver, frame);
-        if (writeStatus != STATUS_SUCCESS && writeStatus != STATUS_SRTP_NOT_READY_YET) {
-            /* Only log if session is still valid (might be destroyed during writeFrame) */
+        if (writeStatus == STATUS_SUCCESS) {
+            diag_drop_reason_count[6]++;  /* Success counter */
+        } else if (writeStatus == STATUS_SRTP_NOT_READY_YET) {
+            diag_drop_reason_count[5]++;  /* SRTP not ready counter */
+        } else {
+            diag_drop_reason_count[7]++;  /* Other failure counter */
             if (session != NULL && !session->terminated) {
                 ESP_LOGW(TAG, "writeFrame failed for session %s: 0x%08" PRIx32, session->peer_id, (UINT32)writeStatus);
             }
+        }
+    } else {
+        diag_drop_reason_count[4]++;  /* NULL transceiver */
+    }
+
+DiagLog:
+    /* Periodic diagnostic log - fires on ALL paths including early exits */
+    {
+        UINT64 now = GETTIME();
+        if (now - diag_last_log_time > 2 * HUNDREDS_OF_NANOS_IN_A_SECOND) {
+            diag_last_log_time = now;
+            ESP_LOGD(TAG, "DIAG frame_cb: null_entry=%" PRIu32 " terminated=%" PRIu32 " no_pc=%" PRIu32 " not_connected=%" PRIu32 " no_xcvr=%" PRIu32 " srtp_notready=%" PRIu32 " ok=%" PRIu32 " fail=%" PRIu32 " | last_kvs_state=%d media_started=%d session=%p",
+                     diag_drop_reason_count[0], diag_drop_reason_count[1], diag_drop_reason_count[2],
+                     diag_drop_reason_count[3], diag_drop_reason_count[4], diag_drop_reason_count[5],
+                     diag_drop_reason_count[6], diag_drop_reason_count[7],
+                     session ? (int)session->last_kvs_state : -1,
+                     session ? (int)ATOMIC_LOAD_BOOL(&session->media_started) : -1,
+                     session);
         }
     }
 
@@ -598,6 +627,8 @@ static STATUS kvs_session_frame_callback(UINT64 callerData, PHashEntry pHashEntr
  */
 static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
 {
+    static UINT32 diag_dispatch_drop[5] = {0};  /* 0=no_sessions, 1=statslock_invalid, 2=statslock_busy, 3=null_table, 4=empty_table */
+    static UINT64 diag_dispatch_last_log = 0;
     STATUS retStatus = STATUS_SUCCESS;
 
     CHK(frame != NULL, STATUS_NULL_ARG);
@@ -612,6 +643,7 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
         if (MUTEX_TRYLOCK(client->session_count_mutex)) {
             if (client->session_count == 0) {
                 MUTEX_UNLOCK(client->session_count_mutex);
+                diag_dispatch_drop[0]++;
                 retStatus = STATUS_SUCCESS;
                 goto CleanUp;
             }
@@ -621,11 +653,13 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
 
     // Prefer statsLock to synchronize with metrics/cleanup without blocking destruction
     if (!IS_VALID_MUTEX_VALUE(client->statsLock)) {
+        diag_dispatch_drop[1]++;
         retStatus = STATUS_INVALID_OPERATION;
         goto CleanUp;
     }
 
     if (!MUTEX_TRYLOCK(client->statsLock)) {
+        diag_dispatch_drop[2]++;
         ESP_LOGD(TAG, "Sender: statsLock busy, skipping frame dispatch to avoid deadlock");
         retStatus = STATUS_SUCCESS;
         goto CleanUp;
@@ -634,7 +668,7 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
     // Quick check for empty table
     if (client->activeSessions == NULL) {
         MUTEX_UNLOCK(client->statsLock);
-        ESP_LOGD(TAG, "Sender: activeSessions is NULL - likely during cleanup");
+        diag_dispatch_drop[3]++;
         retStatus = STATUS_SUCCESS;
         goto CleanUp;
     }
@@ -644,7 +678,7 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
     STATUS countStatus = hashTableGetCount(client->activeSessions, &itemCount);
     if (STATUS_FAILED(countStatus) || itemCount == 0) {
         MUTEX_UNLOCK(client->statsLock);
-        ESP_LOGD(TAG, "Sender: No active sessions (count=%" PRIu32 "), skipping frame dispatch", itemCount);
+        diag_dispatch_drop[4]++;
         retStatus = STATUS_SUCCESS;
         goto CleanUp;
     }
@@ -652,8 +686,8 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
     // Use the official KVS pattern: iterate through sessions and call writeFrame for each
     retStatus = hashTableIterateEntries(client->activeSessions, POINTER_TO_HANDLE(frame), kvs_session_frame_callback);
     if (STATUS_FAILED(retStatus)) {
-        /* Log at debug level - this can happen during session cleanup and is not fatal */
-        ESP_LOGD(TAG, "Sender: hashTableIterateEntries returned: 0x%08" PRIx32 " (expected during cleanup)", (UINT32) retStatus);
+        /* Log at WARN level to ensure visibility */
+        ESP_LOGW(TAG, "Sender: hashTableIterateEntries FAILED: 0x%08" PRIx32, (UINT32) retStatus);
         /* Treat as success to avoid propagating errors during cleanup */
         retStatus = STATUS_SUCCESS;
     }
@@ -661,6 +695,16 @@ static STATUS kvs_iterate_sessions_send_frame(Frame* frame, BOOL is_video)
     MUTEX_UNLOCK(client->statsLock);
 
 CleanUp:
+    /* Periodic diagnostic log for dispatch drops (every 2 seconds, fires on ALL paths including early exits) */
+    {
+        UINT64 now = GETTIME();
+        if (now - diag_dispatch_last_log > 2 * HUNDREDS_OF_NANOS_IN_A_SECOND) {
+            diag_dispatch_last_log = now;
+            ESP_LOGD(TAG, "DIAG dispatch: no_sessions=%" PRIu32 " statslock_invalid=%" PRIu32 " statslock_busy=%" PRIu32 " null_table=%" PRIu32 " empty_table=%" PRIu32,
+                     diag_dispatch_drop[0], diag_dispatch_drop[1], diag_dispatch_drop[2],
+                     diag_dispatch_drop[3], diag_dispatch_drop[4]);
+        }
+    }
     return retStatus;
 }
 
@@ -877,7 +921,7 @@ static PVOID kvs_media_reception_routine(PVOID customData)
     ESP_LOGD(TAG, "Media reception routine started for peer: %s", session->peer_id);
 
     // Wait for connection to be established
-    while (!session->media_started && !session->terminated) {
+    while (!ATOMIC_LOAD_BOOL(&session->media_started) && !session->terminated) {
         THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);  // 100ms
     }
 
@@ -890,7 +934,7 @@ static PVOID kvs_media_reception_routine(PVOID customData)
 
     // Setup media players and frame callbacks happens in kvs_media_start_reception
     // This thread just stays alive while reception is active
-    while (!session->terminated && session->media_started) {
+    while (!session->terminated && ATOMIC_LOAD_BOOL(&session->media_started)) {
         THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);  // 100ms
     }
 

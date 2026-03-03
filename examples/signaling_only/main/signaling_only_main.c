@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2025-2026 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
@@ -17,7 +23,6 @@
 #include "app_storage.h"
 #include "kvs_signaling.h"
 
-
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C5)
 #define IS_VALID_SLAVE_CHIPSET 1
 #else
@@ -25,17 +30,21 @@
 #endif
 
 #if IS_VALID_SLAVE_CHIPSET
-#include "network_coprocessor.h"
+#include "esp_hosted_coprocessor.h"
 #endif
+
 #include "esp_webrtc_time.h"
 #include "app_webrtc.h"
 #include "esp_work_queue.h"
 #include "bridge_peer_connection.h"
+#include "webrtc_bridge.h"
+#include "power_save_handler.h"
 
 static const char *TAG = "signaling_only";
 
-extern int sleep_command_register_cli();
-extern int trigger_offer_command_register_cli();
+extern int trigger_offer_command_register_cli(void);
+extern int query_resolution_command_register_cli(void);
+extern int query_resolution_command_register_response_handler(void);
 
 // Global configuration - keep same structure as before for IoT Core compatibility
 static kvs_signaling_config_t g_kvsSignalingConfig = {0};
@@ -52,7 +61,6 @@ static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *
     switch (event_data->event_id) {
         case APP_WEBRTC_EVENT_SIGNALING_CONNECTED:
             ESP_LOGI(TAG, "Signaling connected successfully");
-            // Note: ICE servers are now transferred on-demand when streaming device requests them
             break;
         case APP_WEBRTC_EVENT_SIGNALING_GET_ICE:
             ESP_LOGI(TAG, "ICE servers fetched from AWS and ready for requests");
@@ -62,7 +70,6 @@ static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *
             break;
         case APP_WEBRTC_EVENT_RECEIVED_OFFER:
             ESP_LOGI(TAG, "Received offer from peer %s", event_data->peer_id);
-            // Note: ICE servers are now provided on-demand when requested by streaming device
             break;
         case APP_WEBRTC_EVENT_SENT_ANSWER:
             ESP_LOGI(TAG, "Sent answer to peer %s", event_data->peer_id);
@@ -85,7 +92,6 @@ static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *
 
 // WiFi event group
 static EventGroupHandle_t s_wifi_event_group;
-static esp_netif_t *sta_netif = NULL;
 static char wifi_ip[72];
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -104,7 +110,6 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         memset(wifi_ip, 0, sizeof(wifi_ip)/sizeof(wifi_ip[0]));
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         memcpy(wifi_ip, &event->ip_info.ip, 4);
-        // s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -126,26 +131,28 @@ static bool wifi_is_provisioned(void)
     return false;
 }
 
-#ifdef CONFIG_SLAVE_LWIP_ENABLED
+#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
+static esp_netif_t *sta_netif = NULL;
+
 static esp_netif_t* create_slave_sta_netif(void)
 {
     /* Create "almost" default station, but with un-flagged DHCP client */
-	/* Use static to ensure the config persists after function returns */
-	static esp_netif_inherent_config_t netif_cfg;
-	memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_STA, sizeof(netif_cfg));
+    /* Use static to ensure the config persists after function returns */
+    static esp_netif_inherent_config_t netif_cfg;
+    memcpy(&netif_cfg, ESP_NETIF_BASE_DEFAULT_WIFI_STA, sizeof(netif_cfg));
 
-	esp_netif_config_t cfg_sta = {
-		.base = &netif_cfg,
-		.stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
-	};
-	esp_netif_t *netif_sta = esp_netif_new(&cfg_sta);
-	ESP_LOGI(TAG, "Created netif_sta: %p (if_key: %s)", netif_sta, netif_cfg.if_key);
-	assert(netif_sta);
+    esp_netif_config_t cfg_sta = {
+        .base = &netif_cfg,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
+    };
+    esp_netif_t *netif_sta = esp_netif_new(&cfg_sta);
+    ESP_LOGI(TAG, "Created netif_sta: %p (if_key: %s)", netif_sta, netif_cfg.if_key);
+    assert(netif_sta);
 
-	ESP_ERROR_CHECK(esp_netif_attach_wifi_station(netif_sta));
-	ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
+    ESP_ERROR_CHECK(esp_netif_attach_wifi_station(netif_sta));
+    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_sta_handlers());
 
-	return netif_sta;
+    return netif_sta;
 }
 #endif
 
@@ -162,12 +169,13 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "ESP32 WebRTC Signaling-Only Example (Using App WebRTC State Machine)");
+    ESP_LOGI(TAG, "ESP32 WebRTC Signaling-Only Example");
 
     esp_cli_start();
     wifi_register_cli(); // for wifi-set command
-    sleep_command_register_cli();
+    // power_save_register_cli();
     trigger_offer_command_register_cli();
+    query_resolution_command_register_cli();
 
     s_wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -176,12 +184,12 @@ void app_main(void)
 
 #if IS_VALID_SLAVE_CHIPSET
     /* Initialize network co-processor */
-#ifdef CONFIG_SLAVE_LWIP_ENABLED
+#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
     /* Create and register the netif with "WIFI_STA_DEF" key */
     sta_netif = create_slave_sta_netif();
 #endif
     /* esp_netif_init and netif creation must be done before network_coprocessor_init */
-    network_coprocessor_init();
+    esp_hosted_coprocessor_init();
 #endif
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
@@ -246,7 +254,7 @@ void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Setting up WebRTC application with KVS signaling and app_webrtc state machine");
+    ESP_LOGI(TAG, "Setting up WebRTC application with KVS signaling");
 
     g_kvsSignalingConfig.pChannelName = CONFIG_AWS_KVS_CHANNEL_NAME;
     g_kvsSignalingConfig.useIotCredentials = false; // Use static credentials for now
@@ -271,6 +279,9 @@ void app_main(void)
     // Register WebRTC event callback
     app_webrtc_register_event_callback(app_webrtc_event_handler, NULL);
 
+    /* Initialize power save handler (must be after esp_hosted_coprocessor_init) */
+    power_save_init();
+
     // Configure WebRTC with our new simplified API - signaling-only mode
     app_webrtc_config_t app_webrtc_config = APP_WEBRTC_CONFIG_DEFAULT();
 
@@ -281,11 +292,13 @@ void app_main(void)
     // Peer connection interface - use bridge-only implementation
     app_webrtc_config.peer_connection_if = bridge_peer_connection_if_get();
 
+    // Initialize bridge command framework (must be before app_webrtc_init which
+    // registers internal handlers like GET_TIME via signaling_bridge_adapter_init)
+    bridge_cmd_init();
+
     ESP_LOGI(TAG, "Initializing WebRTC with bridge peer connection interface:");
     ESP_LOGI(TAG, "  - Interface: bridge-only (no WebRTC SDK initialization)");
     ESP_LOGI(TAG, "  - Role: MASTER (default - manages connections)");
-    ESP_LOGI(TAG, "  - Memory: optimized (no WebRTC components loaded)");
-    ESP_LOGI(TAG, "  - Split mode: ready for bridge communication");
     ESP_LOGI(TAG, "  - Channel: %s", g_kvsSignalingConfig.pChannelName);
 
     status = app_webrtc_init(&app_webrtc_config);
@@ -298,7 +311,6 @@ void app_main(void)
     // app_webrtc_set_role(WEBRTC_CHANNEL_ROLE_TYPE_VIEWER);
 
     ESP_LOGI(TAG, "Starting signaling-only WebRTC application");
-    ESP_LOGI(TAG, "Ready to forward signaling messages to/from streaming device via bridge");
 
     status = app_webrtc_run();
     if (status != WEBRTC_STATUS_SUCCESS) {
@@ -308,5 +320,13 @@ void app_main(void)
         ESP_LOGI(TAG, "WebRTC application started successfully");
     }
 
-    ESP_LOGI(TAG, "Signaling-only example using app_webrtc state machine finished");
+    /* Initialize bridge command framework (bridge is started inside app_webrtc_run) */
+    if (bridge_cmd_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize bridge command subsystem");
+    } else {
+        query_resolution_command_register_response_handler();
+    }
+
+    ESP_LOGI(TAG, "Signaling-only example finished initialization");
+    ESP_LOGI(TAG, "Use 'query-resolution' CLI command to query camera resolution from P4");
 }

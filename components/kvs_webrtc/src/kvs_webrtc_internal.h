@@ -139,7 +139,8 @@ typedef struct kvs_pc_session_s {
     bool candidate_gathering_done;
 
     // Media streaming state
-    bool media_started;
+    volatile ATOMIC_BOOL media_started;
+    volatile INT32 last_kvs_state;  // Last RTC_PEER_CONNECTION_STATE seen (diagnostic)
     bool media_threads_started;
     uint64_t audio_timestamp;
     uint64_t video_timestamp;

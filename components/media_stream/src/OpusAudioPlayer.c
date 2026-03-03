@@ -144,7 +144,7 @@ static void i2s_write_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(5 * 1000));
     }
 }
-#endif
+#endif /* CONFIG_IDF_TARGET_ESP32P4 */
 esp_err_t opus_player_decode_and_play_one_frame(uint8_t *data, size_t size)
 {
     // printf("Decoding and playing one frame %p of size %zu\n", data, size);
@@ -256,20 +256,20 @@ esp_err_t OpusAudioPlayerInit()
         if (spk_codec_dev == NULL) {
             ESP_LOGE(TAG, "Failed to initialize speaker codec");
             return ESP_FAIL;
-        }
+        } else {
+            esp_codec_dev_set_out_mute(spk_codec_dev, false);
+            esp_codec_dev_set_out_vol(spk_codec_dev, 60);
 
-        esp_codec_dev_set_out_mute(spk_codec_dev, false);
-        esp_codec_dev_set_out_vol(spk_codec_dev, 60);
-
-        esp_codec_dev_sample_info_t fs = {
-            .sample_rate = 16000,
-            .channel = 1,
-            .bits_per_sample = 16,
-        };
-        esp_err_t ret = esp_codec_dev_open(spk_codec_dev, &fs);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to open codec device: %s", esp_err_to_name(ret));
-            return ESP_FAIL;
+            esp_codec_dev_sample_info_t fs = {
+                .sample_rate = 16000,
+                .channel = 1,
+                .bits_per_sample = 16,
+            };
+            esp_err_t ret = esp_codec_dev_open(spk_codec_dev, &fs);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to open codec device: %s", esp_err_to_name(ret));
+                return ESP_FAIL;
+            }
         }
     }
 #endif

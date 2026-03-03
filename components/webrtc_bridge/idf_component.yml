@@ -1,5 +1,5 @@
 description: webrtc_bridge
-version: "0.0.1"
+version: "0.0.2"
 
 dependencies:
   esp_webrtc_utils:

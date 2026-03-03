@@ -78,6 +78,7 @@ amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port/
 │   └── webrtc_bridge/      # Split mode IPC bridge
 ├── docs/                   # Some puml diagrams demonstrating different WebRTC scenarios
 ├── examples/               # Example applications
+├── patches/                # SDK patches for ESP-IDF compatibility (apply with git am)
 └── README.md               # This README
 ```
 
@@ -116,6 +117,16 @@ If you've already cloned it without `--recursive` switch do submodule update.
 ```bash
 cd </cloned/dir/path/>
 git submodule update --init
+```
+
+### Apply SDK patches
+
+The main WebRTC SDK submodule requires platform-specific patches for ESP-IDF compatibility. Apply them after cloning:
+
+```bash
+cd amazon-kinesis-video-streams-webrtc-sdk-c
+git am ../patches/*.patch
+cd ..
 ```
 
 ### Install the ESP-IDF

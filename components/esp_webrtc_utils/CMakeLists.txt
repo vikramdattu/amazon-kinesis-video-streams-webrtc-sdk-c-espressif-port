@@ -2,6 +2,9 @@ set(srcs "src/message_utils.c" "src/esp_cli.c" "src/wifi_cli.c" "src/webrtc_mem_
          "src/esp_work_queue.c" "src/esp_webrtc_time.c" "src/flash_wrapper.c")
 
 set(requires esp_wifi console mqtt esp_timer esp_common freertos nvs_flash)
+if(ENABLE_STREAMING_ONLY)
+    list(APPEND requires webrtc_bridge)
+endif()
 
 idf_component_register(SRCS "${srcs}"
                        REQUIRES ${requires}

@@ -23,8 +23,6 @@ if (LINUX_BUILD)
         "include"
         PRIVATE
         "proto"
-        # Include jsmn from the kvswebrtc_main component
-        "${CMAKE_CURRENT_SOURCE_DIR}/../kvswebrtc_main/lib/amazon-kinesis-video-streams-webrtc-sdk-c/src/source/Json"
         # Include protobuf-c headers
         ${PROTOBUF_C_INCLUDE_DIRS}
     )

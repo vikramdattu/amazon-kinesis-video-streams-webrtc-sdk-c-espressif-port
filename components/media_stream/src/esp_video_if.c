@@ -7,6 +7,7 @@
 #include "sdkconfig.h"
 
 #if CONFIG_IDF_TARGET_ESP32P4
+#include <inttypes.h>
 #include <string.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -58,6 +59,7 @@ typedef struct v4l2 {
 
 static v4l2_src_t *g_v4l2 = NULL;
 static video_resolution_t g_current_resolution = {.width = 0, .height = 0, .fps = 0};
+static bool s_sensor_is_ov2710 = false;
 
 /* Global variable to pre-configure resolution before init (set by video_capture_adapter) */
 video_resolution_t g_desired_resolution = {.width = 0, .height = 0, .fps = 0};
@@ -127,6 +129,24 @@ static esp_err_t init_camera(v4l2_src_t *v4l2)
         return ESP_FAIL;
     }
     print_video_device_info(&capability);
+
+    /* Query sensor chip ID via esp_cam_sensor ioctl to detect OV2710 (PID 0x2710) */
+    esp_cam_sensor_id_t chip_id = {0};
+    struct v4l2_ext_controls ext_ctrls = {0};
+    struct v4l2_ext_control ext_ctrl = {0};
+    ext_ctrls.ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL;
+    ext_ctrls.count = 1;
+    ext_ctrls.controls = &ext_ctrl;
+    ext_ctrl.id = ESP_CAM_SENSOR_IOC_G_CHIP_ID;
+    ext_ctrl.p_u8 = (uint8_t *)&chip_id;
+    ext_ctrl.size = sizeof(chip_id);
+    if (ioctl(fd, VIDIOC_G_EXT_CTRLS, &ext_ctrls) == 0) {
+        ESP_LOGI(TAG, "Sensor PID=0x%04x", chip_id.pid);
+        s_sensor_is_ov2710 = (chip_id.pid == 0x2710);
+        if (s_sensor_is_ov2710) {
+            ESP_LOGW(TAG, "OV2710 sensor detected, flip controls will be skipped");
+        }
+    }
 
     struct v4l2_format format;
 
@@ -410,28 +430,32 @@ esp_err_t esp_video_if_start(void)
     }
 
 #if CONFIG_ESP_VIDEO_IF_HOR_FLIP || CONFIG_ESP_VIDEO_IF_VER_FLIP
-    // Set horizontal and/or vertical flip using extended controls since VIDIOC_S_CTRL is not supported
-    struct v4l2_ext_controls ext_ctrls = {0};
-    struct v4l2_ext_control ctrls[2] = {0};
-    int ctrl_count = 0;
+    if (s_sensor_is_ov2710) {
+        ESP_LOGW(TAG, "OV2710 sensor detected, skipping flip controls (not supported)");
+    } else {
+        // Set horizontal and/or vertical flip using extended controls since VIDIOC_S_CTRL is not supported
+        struct v4l2_ext_controls ext_ctrls = {0};
+        struct v4l2_ext_control ctrls[2] = {0};
+        int ctrl_count = 0;
 
 #if CONFIG_ESP_VIDEO_IF_HOR_FLIP
-    ctrls[ctrl_count].id = V4L2_CID_HFLIP;
-    ctrls[ctrl_count].value = 1; // 1 to enable horizontal flip, 0 to disable
-    ctrl_count++;
+        ctrls[ctrl_count].id = V4L2_CID_HFLIP;
+        ctrls[ctrl_count].value = 1; // 1 to enable horizontal flip, 0 to disable
+        ctrl_count++;
 #endif
 
 #if CONFIG_ESP_VIDEO_IF_VER_FLIP
-    ctrls[ctrl_count].id = V4L2_CID_VFLIP;
-    ctrls[ctrl_count].value = 1; // 1 to enable vertical flip, 0 to disable
-    ctrl_count++;
+        ctrls[ctrl_count].id = V4L2_CID_VFLIP;
+        ctrls[ctrl_count].value = 1; // 1 to enable vertical flip, 0 to disable
+        ctrl_count++;
 #endif
 
-    ext_ctrls.controls = ctrls;
-    ext_ctrls.count = ctrl_count;
+        ext_ctrls.controls = ctrls;
+        ext_ctrls.count = ctrl_count;
 
-    if (ioctl(v4l2->cap_fd, VIDIOC_S_EXT_CTRLS, &ext_ctrls) < 0) {
-        ESP_LOGW(TAG, "Failed to set flip controls, errno: %d", errno);
+        if (ioctl(v4l2->cap_fd, VIDIOC_S_EXT_CTRLS, &ext_ctrls) < 0) {
+            ESP_LOGW(TAG, "Failed to set flip controls, errno: %d", errno);
+        }
     }
 #endif
 

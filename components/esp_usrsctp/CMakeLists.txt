@@ -85,5 +85,8 @@ add_compile_options(
 # Add usrsctp as a subdirectory
 add_subdirectory(${usrsctp_root_dir} ${CMAKE_CURRENT_BINARY_DIR}/usrsctp)
 
+# so that we can use pthread and heap functions in usrsctp
+target_link_libraries(usrsctp PRIVATE idf::pthread idf::heap)
+
 # Link against usrsctp library
 target_link_libraries(${COMPONENT_LIB} PUBLIC usrsctp)

@@ -109,6 +109,16 @@ void signaling_bridge_adapter_trigger_wakeup(void);
  */
 void signaling_bridge_adapter_deinit(void);
 
+/**
+ * @brief Register bridge_cmd handlers (time sync, etc.)
+ *
+ * Called internally from signaling_bridge_adapter_init(). Registers handlers
+ * for BRIDGE_CMD_GET_TIME. ICE exchange uses signaling channel.
+ *
+ * @return 0 on success, -1 on failure
+ */
+int signaling_bridge_adapter_register_bridge_cmd_handlers(void);
+
 #ifdef __cplusplus
 }
 #endif

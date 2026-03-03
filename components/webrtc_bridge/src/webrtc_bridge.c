@@ -5,6 +5,7 @@
  */
 
 #include <string.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -14,16 +15,16 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_work_queue.h"
-#include "message_utils.h"
+#include "hosted_chunked_transport.h"
 #include "webrtc_bridge.h"
 
-#if CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5
-#define NETWORK_SPLIT_ENABLED 1
-#endif
-
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
-#if defined(ENABLE_SIGNALLING_ONLY) && defined(NETWORK_SPLIT_ENABLED)
-#include "network_coprocessor.h"
+/* Coprocessor (slave) uses peer_data API; host uses esp_hosted */
+#if CONFIG_ESP_HOSTED_COPROCESSOR
+#include "esp_hosted_peer_data.h"
+#elif CONFIG_ESP_HOSTED_ENABLED
+#include "esp_hosted.h"
+#include "esp_hosted_misc.h"
 #endif
 #endif
 
@@ -32,32 +33,9 @@
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
 static SemaphoreHandle_t mutex;
 
-#define RPC_USER_SPECIFIC_EVENT_DATA_SIZE (1024) // Not > 4K
-#if ENABLE_SIGNALLING_ONLY && NETWORK_SPLIT_ENABLED
-typedef struct custom_rpc_data_slave_to_host {
-    int32_t resp; /* unused */
-    int32_t uuid;
-    int32_t int_2; /* is_fin */
-    uint32_t seq_num;
-    uint32_t total_len;
-    uint16_t data_len;
-    uint8_t data[RPC_USER_SPECIFIC_EVENT_DATA_SIZE];
-} custom_rpc_data_t;
-static custom_rpc_data_t custom_send_data;
-#elif ENABLE_STREAMING_ONLY && CONFIG_ESP_HOSTED_ENABLED
-#include "rpc_wrap.h"
-// typedef struct {
-//   int32_t int_1; /* uuid */
-//   int32_t int_2; /* unused */
-//   uint32_t uint_1; /* seq_num */
-//   uint32_t uint_2; /* total_len */
-//   uint16_t data_len;
-//   uint8_t data[RPC_USER_SPECIFIC_EVENT_DATA_SIZE];
-// } rpc_usr_t;
-static rpc_usr_t req = {0};
-static rpc_usr_t resp = {0};
-#endif
-// static custom_rpc_data_t custom_recv_data;
+/* WebRTC message ID for custom data transfer */
+#define WEBRTC_MSG_ID ((uint32_t)0x1000)
+
 #else
 #include "mqtt_client.h"
 #define BROKER_URI "mqtt://mqtt.eclipseprojects.io"
@@ -65,7 +43,12 @@ static rpc_usr_t resp = {0};
 #define SIGNALING_TOPIC "signal"
 #define STREAMING_TOPIC "stream"
 
-/* Signalling and streaming TO/FROM topics are flipped */
+/*
+ * MQTT needs separate topics per device role when two devices communicate via broker.
+ * Signalling device: publishes to streaming topic, subscribes to signalling.
+ * Streaming device: publishes to signalling topic, subscribes to streaming.
+ * ENABLE_SIGNALLING_ONLY / ENABLE_STREAMING_ONLY are set by the project (e.g. example's option()).
+ */
 #if ENABLE_SIGNALLING_ONLY
 #define TO_TOPIC STREAMING_TOPIC
 #define FROM_TOPIC SIGNALING_TOPIC
@@ -95,158 +78,64 @@ void webrtc_bridge_register_handler(webrtc_bridge_msg_cb_t handler)
 }
 
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
-static void webrtc_bridge_send_via_hosted(const char *data, int len);
-
-#if ENABLE_SIGNALLING_ONLY && defined(NETWORK_SPLIT_ENABLED)
-extern void send_event_data_to_host(int event_id, void *data, int size);
-#elif ENABLE_STREAMING_ONLY && CONFIG_ESP_HOSTED_ENABLED
+typedef struct {
+    uint8_t *data;
+    size_t len;
+} webrtc_bridge_msg_ctx_t;
 
 static void handle_on_message_received(void *priv_data)
 {
-    received_msg_t *received_msg = (received_msg_t *) priv_data;
+    webrtc_bridge_msg_ctx_t *ctx = (webrtc_bridge_msg_ctx_t *)priv_data;
 
-    // Use the registered handler if available, otherwise use the default
+    ESP_LOGD(TAG, "handle_on_message_received: processing message (%zu bytes), handler=%p",
+             ctx->len, message_handler);
+
     if (message_handler) {
-        message_handler((const void *)received_msg->buf, received_msg->data_size);
+        message_handler((const void *)ctx->data, (int)ctx->len);
     } else {
-        on_webrtc_bridge_msg_received((void *) received_msg->buf, received_msg->data_size);
+        on_webrtc_bridge_msg_received((void *)ctx->data, (int)ctx->len);
     }
 
-    /* Done! Free the buffer now */
-    free(received_msg->buf);
-    free(received_msg);
+    free(ctx->data);
+    free(ctx);
 }
 
-static void usr_evt_cb(uint8_t usr_evt_num, rpc_usr_t *usr_evt)
+static void webrtc_bridge_on_hosted_message(const uint8_t *data, size_t len)
 {
-    if (!usr_evt)
+    webrtc_bridge_msg_ctx_t *ctx = malloc(sizeof(webrtc_bridge_msg_ctx_t));
+    if (!ctx) {
+        ESP_LOGE(TAG, "Failed to allocate message context");
+        free((void *)data);
         return;
-
-    /* This function is thread safe. No need for locks */
-    esp_err_t append_ret = ESP_FAIL;
-    static received_msg_t *received_msg = NULL;
-
-    switch(usr_evt_num) {
-        case 1: /* Intended fall-through */
-        case 2: /* Intended fall-through */
-        case 3: /* Intended fall-through */
-        case 4: /* Intended fall-through */
-        case 5: /* Intended fall-through */
-            // ESP_LOGI(TAG, "==> Recvd custom RPC Event[%u]: int_1:%"PRId32" int_2:%"PRId32" uint_1:%"PRIu32" uint_2:%"PRIu32" data_len:%u data:%s",
-            //  usr_evt_num, usr_evt->int_1,
-            //  usr_evt->int_2, usr_evt->uint_1,
-            //  usr_evt->uint_2, usr_evt->data_len, usr_evt->data);
-
-            if (!received_msg) {
-                if (usr_evt->uint_1 == 0) {
-                    received_msg = esp_webrtc_create_buffer_for_msg(usr_evt->uint_2);
-                }
-                if (!received_msg) {
-                    ESP_LOGE(TAG, "Memory issue or wrong seq number");
-                    return;
-                }
-            }
-
-            bool is_fin = usr_evt->int_2;
-            append_ret = esp_webrtc_append_msg_to_existing(received_msg, usr_evt->data, usr_evt->data_len, is_fin);
-            if (append_ret == ESP_OK) {
-                /* Process the message after switch case. */
-            } else if (append_ret == ESP_FAIL) {
-                ESP_LOGW(TAG, "Failed to put the message into buffer...");
-                free(received_msg->buf);
-                free(received_msg);
-                received_msg = NULL;
-            } else {
-                ESP_LOGW(TAG, "Waiting for the next part...");
-            }
-
-        break;
-
-        default:
-            ESP_LOGI(TAG, "Unhandled usr evt[%u]", usr_evt_num);
-            return;
     }
+    ctx->data = (uint8_t *)data;
+    ctx->len = len;
 
-    if (append_ret == ESP_OK) {
-        /* Process the message now */
-        esp_work_queue_add_task(&handle_on_message_received, (void *) received_msg);
-        received_msg = NULL;
+    ESP_LOGD(TAG, "Message complete (%zu bytes), queuing for processing", len);
+    esp_err_t ret = esp_work_queue_add_task(&handle_on_message_received, ctx);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to queue message: %s", esp_err_to_name(ret));
+        free((void *)data);
+        free(ctx);
     }
-    /* Do not free usr_evt, as it is already handled internally */
 }
-#endif
 
-static void webrtc_bridge_send_via_hosted(const char *data, int len)
+static void webrtc_bridge_receive_callback(uint32_t msg_id, const uint8_t *data, size_t data_len, void *local_context)
 {
-    int32_t uuid = rand();
-    int len_remain = len;
-    int seq_num = 0;
-#if ENABLE_SIGNALLING_ONLY && NETWORK_SPLIT_ENABLED
-#define MAX_CHUNK_LEN  (1024)
-#else
-#define MAX_CHUNK_LEN  (1000)
-#endif
-
-    xSemaphoreTake(mutex, 5000);
-    int32_t data_len = MAX_CHUNK_LEN;
-    int32_t data_idx = 0;
-#if ENABLE_SIGNALLING_ONLY && NETWORK_SPLIT_ENABLED  // Slave (C6) --> Host (P4)
-    // RPC_ID__Event_USR1 = 778... BAD hacks?
-    custom_send_data.uuid = uuid;
-    custom_send_data.total_len = len;
-    custom_send_data.int_2 = 0;
-    while (len_remain > 0) {
-        if (len_remain <= MAX_CHUNK_LEN) {
-            data_len = len_remain;
-            custom_send_data.int_2 = 1;
-        }
-        custom_send_data.seq_num = seq_num;
-        custom_send_data.data_len = data_len;
-        memcpy(custom_send_data.data, data + data_idx, data_len);
-        // Send the event now...
-        send_event_data_to_host(778, (void *) &custom_send_data, sizeof(custom_rpc_data_t));
-        len_remain -= data_len;
-        data_idx += data_len;
-        seq_num++;
+    if (msg_id != WEBRTC_MSG_ID) {
+        ESP_LOGW(TAG, "Unexpected msg_id: 0x%" PRIx32, msg_id);
+        return;
     }
-#elif ENABLE_STREAMING_ONLY && CONFIG_ESP_HOSTED_ENABLED // Host (P4) --> Slave (C6)
-    req.int_1 = uuid;
-    req.uint_2 = len;
-    req.int_2 = 0; /* is_fin */
-    while (len_remain > 0) {
-        if (len_remain <= MAX_CHUNK_LEN) {
-            data_len = len_remain;
-            req.int_2 = 1; /* is_fin */
-        }
-        req.uint_1 = seq_num;
-        req.data_len = data_len;
-        memcpy(req.data, data + data_idx, data_len);
-        // rpc request encopassing our data
-        // send_event_data_to_host(778, custom_send_data, sizeof(custom_rpc_data_t));
-        rpc_send_usr_request(1, &req, &resp);
-        len_remain -= data_len;
-        data_idx += data_len;
-        seq_num++;
-    }
-#else
-    (void) uuid;
-    (void) len_remain;
-    (void) seq_num;
-    (void) data_len;
-    (void) data_idx;
-#endif
-    xSemaphoreGive(mutex);
+    hosted_chunked_process_chunk(WEBRTC_MSG_ID, data, data_len);
 }
-#endif // CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
+#endif /* CONFIG_ESP_WEBRTC_BRIDGE_HOSTED */
 
 void webrtc_bridge_send_message(const char *data, int len)
 {
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
-    /** Send directly from caller's thread */
-    webrtc_bridge_send_via_hosted(data, len);
-
-    /* Free the data buffer after sending */
-    free((void*)data);
+    hosted_chunked_send(WEBRTC_MSG_ID, (const uint8_t *)data, (size_t)len,
+                        mutex, HOSTED_CHUNK_WIRE_LEGACY);
+    free((void *)data);
 #else
     int msg_id = esp_mqtt_client_publish(g_mqtt_client, TO_TOPIC, data, len, 1, 0);
     ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
@@ -333,14 +222,23 @@ void webrtc_bridge_start(void)
         return;
     }
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
+    ESP_LOGI(TAG, "Hosted mode enabled, initializing...");
     mutex = xSemaphoreCreateMutex();
-#if ENABLE_SIGNALLING_ONLY && NETWORK_SPLIT_ENABLED
-    /* Register our message handling function with the network coprocessor */
-    network_coprocessor_register_webrtc_callback(&on_webrtc_bridge_msg_received);
-    ESP_LOGI(TAG, "WebRTC bridge registered with network coprocessor");
-#elif ENABLE_STREAMING_ONLY && CONFIG_ESP_HOSTED_ENABLED
-    rpc_register_usr_event_callback(usr_evt_cb);
-#endif
+    if (!mutex) {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        return;
+    }
+    ESP_LOGI(TAG, "Mutex created successfully");
+
+    hosted_chunked_register(WEBRTC_MSG_ID, webrtc_bridge_on_hosted_message);
+
+    ESP_LOGI(TAG, "Registering WebRTC callback with msg_id: 0x%" PRIx32 " (%" PRIu32 ")", WEBRTC_MSG_ID, WEBRTC_MSG_ID);
+    esp_err_t ret = esp_hosted_register_custom_callback(WEBRTC_MSG_ID, webrtc_bridge_receive_callback, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register WebRTC callback (msg_id: 0x%" PRIx32 "): %s", WEBRTC_MSG_ID, esp_err_to_name(ret));
+        return;
+    }
+    ESP_LOGI(TAG, "WebRTC bridge callback registered successfully (msg_id: 0x%" PRIx32 ")", WEBRTC_MSG_ID);
 #else
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = BROKER_URI,

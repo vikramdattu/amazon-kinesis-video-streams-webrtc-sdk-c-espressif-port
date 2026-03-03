@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2025-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -8,11 +8,13 @@
 #include "string.h"
 #include "stdlib.h"
 #include "webrtc_bridge.h"
+#include "bridge_cmd_defs.h"
 #include "app_webrtc.h"
 #include "signaling_bridge_adapter.h"
 #include "signaling_serializer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include <sys/time.h>
 
 #if CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5
 #define NETWORK_SPLIT_ENABLED 1
@@ -21,7 +23,7 @@
 #endif
 
 #if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && NETWORK_SPLIT_ENABLED
-#include "network_coprocessor.h"
+#include "esp_hosted_coprocessor.h"
 #endif
 #if NETWORK_SPLIT_ENABLED
 #include "host_power_save.h"
@@ -286,8 +288,41 @@ static void handle_bridged_message(const void* data, int len)
         return;
     }
 
-    // Note: ICE requests are now handled via synchronous RPC, not bridge messages
-    // This provides much better performance (89ms vs 1.4s) by bypassing the async queue
+#if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && (CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5)
+    // Handle ICE_REQUEST from P4 - respond via signaling channel (no bridge_cmd)
+    if (signalingMsg.messageType == SIGNALING_MSG_TYPE_ICE_REQUEST) {
+        ss_ice_request_payload_t req;
+        if (extract_ice_request_from_message(&signalingMsg, &req) == ESP_OK && g_initialized) {
+            uint8_t *raw_data = NULL;
+            int raw_len = 0;
+            bool have_more = false;
+            WEBRTC_STATUS status = app_webrtc_get_server_by_idx((int)req.index, req.use_turn,
+                                                                &raw_data, &raw_len, &have_more);
+            if (status == WEBRTC_STATUS_SUCCESS) {
+                signaling_msg_t resp_msg = {0};
+                if (create_ice_server_response_message(raw_data, have_more, &resp_msg) == ESP_OK) {
+                    size_t serialized_len = 0;
+                    char *serialized = serialize_signaling_message(&resp_msg, &serialized_len);
+                    if (serialized) {
+                        webrtc_bridge_send_message(serialized, serialized_len);
+                    }
+                    if (resp_msg.payload) {
+                        free(resp_msg.payload);
+                    }
+                }
+                if (raw_data) {
+                    free(raw_data);
+                }
+            } else if (raw_data) {
+                free(raw_data);
+            }
+        }
+        if (signalingMsg.payload != NULL) {
+            free(signalingMsg.payload);
+        }
+        return;
+    }
+#endif
 
     // Convert to webrtc_message_t format for potential direct handling by bridge_peer_connection
     webrtc_message_t webrtcMsg = {0};
@@ -376,11 +411,9 @@ WEBRTC_STATUS signaling_bridge_adapter_init(const signaling_bridge_adapter_confi
     webrtc_bridge_register_handler(handle_bridged_message);
     ESP_LOGI(TAG, "Registered bridge message handler");
 
-    // Register RPC handler with network coprocessor for ICE server queries
-#if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && !defined(CONFIG_IDF_TARGET_ESP32P4)
-    network_coprocessor_register_ice_server_query_callback(signaling_bridge_adapter_rpc_handler);
-    ESP_LOGI(TAG, "Registered ICE server RPC handler");
-#endif
+    if (signaling_bridge_adapter_register_bridge_cmd_handlers() != 0) {
+        ESP_LOGE(TAG, "Failed to register signaling bridge adapter bridge_cmd handlers");
+    }
 
     g_initialized = true;
     ESP_LOGI(TAG, "Signaling bridge adapter initialized successfully");
@@ -527,6 +560,44 @@ void signaling_bridge_adapter_trigger_wakeup(void)
     set_queue_state(QUEUE_STATE_WAITING_FOR_WAKEUP);
 }
 
+#if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && (CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5)
+/**
+ * @brief bridge_cmd handler for BRIDGE_CMD_GET_TIME
+ *
+ * C6 returns current time (struct timeval) for P4 time sync.
+ */
+static esp_err_t handle_get_time_request(uint32_t cmd_id,
+                                         const uint8_t *req_data, size_t req_len,
+                                         uint8_t **resp_data, size_t *resp_len)
+{
+    (void)cmd_id;
+    (void)req_data;
+    (void)req_len;
+
+    struct timeval *tv = (struct timeval *)malloc(sizeof(struct timeval));
+    if (!tv) {
+        return ESP_ERR_NO_MEM;
+    }
+    gettimeofday(tv, NULL);
+    *resp_data = (uint8_t *)tv;
+    *resp_len = sizeof(struct timeval);
+    return ESP_OK;
+}
+#endif
+
+int signaling_bridge_adapter_register_bridge_cmd_handlers(void)
+{
+#if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && (CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C5)
+    /* ICE exchange uses signaling channel (SIGNALING_MSG_TYPE_ICE_REQUEST/RESPONSE), not bridge_cmd */
+    if (bridge_cmd_register_handler(BRIDGE_CMD_GET_TIME, handle_get_time_request) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register GET_TIME bridge_cmd handler");
+        return -1;
+    }
+    ESP_LOGI(TAG, "Registered bridge_cmd GET_TIME handler");
+#endif
+    return 0;
+}
+
 void signaling_bridge_adapter_deinit(void)
 {
     if (g_initialized) {
@@ -538,11 +609,6 @@ void signaling_bridge_adapter_deinit(void)
             vSemaphoreDelete(g_message_queue.mutex);
             g_message_queue.mutex = NULL;
         }
-
-        // Unregister RPC handler
-#if CONFIG_ESP_WEBRTC_BRIDGE_HOSTED && NETWORK_SPLIT_ENABLED
-        network_coprocessor_register_ice_server_query_callback(NULL);
-#endif
 
         // Clear configuration
         memset(&g_config, 0, sizeof(signaling_bridge_adapter_config_t));

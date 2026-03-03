@@ -1,32 +1,32 @@
 ## IDF Component Manager Manifest File
 dependencies:
   # local components
-  espressif/esp_hosted:
-    override_path: ${KVS_SDK_PATH}/components/esp_hosted
+
+  espressif/esp_wifi_remote:
     version: '*'
     rules:
     - if: target in [esp32p4]
 
-  espressif/esp_wifi_remote:
-    override_path: ${KVS_SDK_PATH}/components/esp_wifi_remote
+  espressif/esp_hosted:
+    override_path: ${KVS_SDK_PATH}/esp_port/components/esp_hosted
     version: '*'
     rules:
     - if: target in [esp32p4]
 
   esp_webrtc_utils:
-    path: ${KVS_SDK_PATH}/components/esp_webrtc_utils
+    path: ${KVS_SDK_PATH}/esp_port/components/esp_webrtc_utils
     version: '*'
 
   kvs_webrtc:
-    path: ${KVS_SDK_PATH}/components/kvs_webrtc
+    path: ${KVS_SDK_PATH}/esp_port/components/kvs_webrtc
     version: '*'
 
   app_webrtc:
-    path: ${KVS_SDK_PATH}/components/app_webrtc
+    path: ${KVS_SDK_PATH}/esp_port/components/app_webrtc
     version: '*'
 
   media_stream:
-    path: ${KVS_SDK_PATH}/components/media_stream
+    path: ${KVS_SDK_PATH}/esp_port/components/media_stream
     version: '*'
 
   bridge_signaling:
@@ -34,5 +34,9 @@ dependencies:
     version: '*'
 
   app_common:
-    path: ${KVS_SDK_PATH}/examples/app_common
+    path: ${KVS_SDK_PATH}/esp_port/examples/app_common
+    version: '*'
+
+  slave_flasher:
+    path: ${KVS_SDK_PATH}/esp_port/components/slave_flasher
     version: '*'

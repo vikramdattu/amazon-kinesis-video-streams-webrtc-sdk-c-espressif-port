@@ -19,10 +19,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
-
-#include "rpc_wrap.h"
-static rpc_usr_t req = {0};
-static rpc_usr_t resp = {0};
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "webrtc_bridge.h"
+#include "bridge_cmd_defs.h"
 #endif
 
 static const char *TAG = "esp_webrtc_time";
@@ -47,49 +47,106 @@ static const char *server_list[] = {
 };
 static const int num_servers = sizeof(server_list) / sizeof(server_list[0]);
 
-static void initialize_sntp(void)
+#if ENABLE_STREAMING_ONLY && CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
+#define TIME_SYNC_REF_SEC  (1722297600)  /* 1 July 2024 00:00:00 UTC */
+#define TIME_SYNC_TIMEOUT_MS 5000
+
+static SemaphoreHandle_t s_time_sem = NULL;
+static struct timeval s_coproc_timeval = {0};
+static volatile bool s_time_response_valid = false;
+
+static void get_time_response_cb(uint32_t cmd_id, uint32_t req_id,
+                                 esp_err_t status, uint8_t *resp_data, size_t resp_len)
 {
-#if ENABLE_STREAMING_ONLY && CONFIG_IDF_TARGET_ESP32P4
-    // Define the date and time: 1 July 2024, 00:00:00
-    struct tm date = {0};
-    date.tm_year = 2024 - 1900; // tm_year is years since 1900
-    date.tm_mon = 7 - 1;        // tm_mon is months since January (0-11)
-    date.tm_mday = 30;           // Day of the month
-
-    // Convert to time_t
-    time_t ref_time = mktime(&date);
-
-#define SOME_STR "Req GetTimeOfTheDay"
-    struct timeval tv = {};
-    // Set time obtained from coprocessor first
-    req.data_len = sizeof(SOME_STR);
-    memcpy(req.data, SOME_STR, sizeof(SOME_STR));
-
-retry_sync:
-    int correction_usec = 0;
-    rpc_send_usr_request(2, &req, &resp);
-    struct timeval time_start, time_end;
-    gettimeofday(&time_start, NULL);
-    memcpy(&tv, resp.data, sizeof(struct timeval));
-    if (tv.tv_sec < ref_time) {
-        ESP_LOGI(TAG, "Retrying time sync from coprocessor...");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        goto retry_sync;
-    } else {
-        time_sync_done = true;
-        gettimeofday(&time_end, NULL);
-        int rtt_us = (time_end.tv_sec - time_start.tv_sec) * 1000000 + time_end.tv_usec - time_start.tv_usec;
-        correction_usec = rtt_us / 2;
-        tv.tv_sec += correction_usec / 1000000;
-        tv.tv_usec += correction_usec % 1000000;
+    (void)cmd_id;
+    (void)req_id;
+    s_time_response_valid = false;
+    if (status == ESP_OK && resp_data != NULL && resp_len >= sizeof(struct timeval)) {
+        memcpy(&s_coproc_timeval, resp_data, sizeof(struct timeval));
+        s_time_response_valid = true;
     }
-    // Set the last obtained time and go ahead
-    settimeofday(&tv, NULL);
-    ESP_LOGI(TAG, "New time set with %dus correction", correction_usec);
+    if (resp_data) free(resp_data);
+    if (s_time_sem) xSemaphoreGive(s_time_sem);
+}
 
-    if (time_sync_done) {
+static bool s_time_handler_registered = false;
+
+static bool ensure_time_handler_registered(void)
+{
+    if (s_time_handler_registered) {
+        return (s_time_sem != NULL);
+    }
+    s_time_sem = xSemaphoreCreateBinary();
+    if (!s_time_sem) return false;
+    if (bridge_cmd_register_response_handler(BRIDGE_CMD_GET_TIME, get_time_response_cb) != ESP_OK) {
+        vSemaphoreDelete(s_time_sem);
+        s_time_sem = NULL;
+        return false;
+    }
+    s_time_handler_registered = true;
+    return true;
+}
+
+void esp_webrtc_time_register_bridge_cmd_handlers(void)
+{
+    if (s_time_handler_registered) {
         return;
     }
+    ensure_time_handler_registered();
+}
+
+static bool sync_time_from_coprocessor(struct timeval *out_tv)
+{
+    if (!ensure_time_handler_registered()) {
+        return false;
+    }
+
+    s_time_response_valid = false;
+    struct timeval time_before_send;
+    gettimeofday(&time_before_send, NULL);
+
+    esp_err_t err = bridge_cmd_send(BRIDGE_CMD_GET_TIME, NULL, 0);
+    if (err != ESP_OK) return false;
+
+    if (xSemaphoreTake(s_time_sem, pdMS_TO_TICKS(TIME_SYNC_TIMEOUT_MS)) != pdTRUE) {
+        return false;
+    }
+    if (!s_time_response_valid || out_tv == NULL) return s_time_response_valid;
+
+    struct timeval time_after_recv;
+    gettimeofday(&time_after_recv, NULL);
+    int rtt_us = (int)((time_after_recv.tv_sec - time_before_send.tv_sec) * 1000000 +
+                       (time_after_recv.tv_usec - time_before_send.tv_usec));
+    if (rtt_us < 0) rtt_us = 0;
+    int correction_usec = rtt_us / 2;
+    out_tv->tv_sec = s_coproc_timeval.tv_sec + correction_usec / 1000000;
+    out_tv->tv_usec = s_coproc_timeval.tv_usec + correction_usec % 1000000;
+    return true;
+}
+#endif
+
+static void initialize_sntp(void)
+{
+#if ENABLE_STREAMING_ONLY && CONFIG_IDF_TARGET_ESP32P4 && CONFIG_ESP_WEBRTC_BRIDGE_HOSTED
+    /* P4 streaming: get time from C6 (signaling) via bridge_cmd */
+    struct timeval tv;
+    for (int retry = 0; retry < 5; retry++) {
+        if (!sync_time_from_coprocessor(&tv)) {
+            ESP_LOGW(TAG, "Time sync from coprocessor failed, retry %d/5", retry + 1);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        if (tv.tv_sec < TIME_SYNC_REF_SEC) {
+            ESP_LOGI(TAG, "C6 time not yet valid (%ld), retrying...", (long)tv.tv_sec);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        settimeofday(&tv, NULL);
+        time_sync_done = true;
+        ESP_LOGI(TAG, "Time synced from coprocessor");
+        return;
+    }
+    ESP_LOGE(TAG, "Failed to sync time from coprocessor after 5 retries");
 #endif
 
     ESP_LOGI(TAG, "Initializing SNTP");

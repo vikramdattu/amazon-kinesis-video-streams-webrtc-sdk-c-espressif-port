@@ -9,7 +9,7 @@
 #include <inttypes.h>
 
 #if CONFIG_IDF_TARGET_ESP32P4 && CONFIG_EXAMPLE_ENABLE_POWER_SAVE
-#include "power_save_drv.h"
+#include "esp_hosted_power_save.h"
 #include "freertos/portmacro.h"
 #endif
 
@@ -69,12 +69,12 @@ static void power_save_event_handler(app_webrtc_event_data_t *event_data, void *
             g_active_peer_connections = 0;
             portEXIT_CRITICAL(&g_peer_connections_lock);
             ESP_LOGI(TAG, "WebRTC initialized, starting idle deep-sleep timer");
-            host_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
+            esp_hosted_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
             ESP_LOGI(TAG, "Started idle deep-sleep timer (%d ms)", IDLE_DEEP_SLEEP_TIMEOUT_MS);
             break;
         case APP_WEBRTC_EVENT_PEER_CONNECTION_REQUESTED:
             ESP_LOGI(TAG, "Peer connection requested, resetting host power save timer");
-            host_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
+            esp_hosted_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
             break;
 
         case APP_WEBRTC_EVENT_PEER_CONNECTED:
@@ -83,7 +83,7 @@ static void power_save_event_handler(app_webrtc_event_data_t *event_data, void *
                 uint32_t count = increment_peer_connection();
                 ESP_LOGI(TAG, "Peer connected: %s (active peers: %" PRIu32 "), stopping host power save timer",
                          event_data->peer_id ? event_data->peer_id : "unknown", count);
-                host_power_save_timer_stop();
+                esp_hosted_power_save_timer_stop();
             }
             break;
 
@@ -96,7 +96,7 @@ static void power_save_event_handler(app_webrtc_event_data_t *event_data, void *
                 if (count == 0) {
                     ESP_LOGI(TAG, "All peer connections closed, starting host power save timer");
                     /* Give host few seconds, as it might still get some packets */
-                    host_power_save_timer_start(POST_STREAMING_DEEP_SLEEP_TIMEOUT_MS);
+                    esp_hosted_power_save_timer_start(POST_STREAMING_DEEP_SLEEP_TIMEOUT_MS);
                 } else {
                     ESP_LOGI(TAG, "Other peers still connected (%" PRIu32 "), keeping timer stopped", count);
                 }
@@ -105,13 +105,13 @@ static void power_save_event_handler(app_webrtc_event_data_t *event_data, void *
 
         case APP_WEBRTC_EVENT_RECEIVED_OFFER:
             ESP_LOGI(TAG, "Received offer, resetting host power save timer");
-            host_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
+            esp_hosted_power_save_timer_start(IDLE_DEEP_SLEEP_TIMEOUT_MS);
             break;
 
         case APP_WEBRTC_EVENT_SENT_ANSWER:
             /* Answer sent means connection and streaming will happen, stop timer */
             ESP_LOGI(TAG, "Sent answer, stopping host power save timer");
-            host_power_save_timer_stop();
+            esp_hosted_power_save_timer_stop();
             break;
 
         default:
@@ -144,7 +144,7 @@ int32_t power_save_enable(void)
 static int deep_sleep_cli_handler(int argc, char *argv[])
 {
     ESP_LOGI(TAG, "Putting ESP32-P4 into deep sleep...");
-    start_host_power_save();
+    esp_hosted_power_save_start(HOSTED_POWER_SAVE_TYPE_DEEP_SLEEP);
     return 0;
 }
 

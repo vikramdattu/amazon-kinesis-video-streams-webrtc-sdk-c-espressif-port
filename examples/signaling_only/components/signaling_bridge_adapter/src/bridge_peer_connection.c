@@ -16,10 +16,12 @@
 
 #include "esp_log.h"
 #include "app_webrtc.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include "bridge_peer_connection.h"
 #include "signaling_bridge_adapter.h"
+#include "webrtc_bridge.h"
 
 static const char *TAG = "bridge_pc";
 

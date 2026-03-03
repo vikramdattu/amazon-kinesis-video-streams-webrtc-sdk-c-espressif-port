@@ -13,7 +13,7 @@ static const char *TAG = "message_utils";
 
 received_msg_t *esp_webrtc_create_buffer_for_msg(int capacity)
 {
-    ESP_LOGI(TAG, "Creating buffer of capacity %d", capacity);
+    ESP_LOGD(TAG, "Creating buffer of capacity %d", capacity);
     received_msg_t *msg = (received_msg_t *) calloc(1, sizeof(received_msg_t));
     if (!msg) {
         ESP_LOGE(TAG, "Failed allocation of message structure");
@@ -33,7 +33,7 @@ received_msg_t *esp_webrtc_create_buffer_for_msg(int capacity)
 
 esp_err_t esp_webrtc_append_msg_to_existing(received_msg_t *dst_msg, void *data_ptr, int data_len, bool is_fin)
 {
-    ESP_LOGI(TAG, "Appending message of size %d at %d location, is_fin: %d", data_len, dst_msg->data_size, is_fin);
+    ESP_LOGD(TAG, "Appending message of size %d at %d location, is_fin: %d", data_len, dst_msg->data_size, is_fin);
 
     if (!is_fin) {
         if (dst_msg->data_size + data_len > dst_msg->capacity) {

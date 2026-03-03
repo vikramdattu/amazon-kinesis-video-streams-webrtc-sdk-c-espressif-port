@@ -88,9 +88,11 @@ VOID defaultLogPrint(UINT32 level, const PCHAR tag, const PCHAR fmt, ...)
 
         va_list valist;
         va_start(valist, fmt);
-        level = level > 3 ? 3 : level;
-        esp_log_writev(3 - level, tag, logFmtString, valist);
-        // vprintf(logFmtString, valist);
+        // KVS: VERBOSE=1 DEBUG=2 INFO=3 WARN=4 ERROR=5 FATAL=6 (higher=more severe)
+        // ESP: ERROR=1 WARN=2 INFO=3 DEBUG=4 VERBOSE=5 (higher=more verbose)
+        // Correct mapping: esp_level = 6 - kvs_level (clamped to ESP_LOG_ERROR minimum)
+        esp_log_level_t esp_level = (level >= 6) ? ESP_LOG_ERROR : (esp_log_level_t)(6 - level);
+        esp_log_writev(esp_level, tag, logFmtString, valist);
         va_end(valist);
     }
 }

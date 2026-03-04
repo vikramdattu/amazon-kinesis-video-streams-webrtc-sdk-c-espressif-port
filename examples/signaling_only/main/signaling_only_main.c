@@ -294,7 +294,10 @@ void app_main(void)
 
     // Initialize bridge command framework (must be before app_webrtc_init which
     // registers internal handlers like GET_TIME via signaling_bridge_adapter_init)
-    bridge_cmd_init();
+    ret = bridge_cmd_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize bridge command framework: %s", esp_err_to_name(ret));
+    }
 
     ESP_LOGI(TAG, "Initializing WebRTC with bridge peer connection interface:");
     ESP_LOGI(TAG, "  - Interface: bridge-only (no WebRTC SDK initialization)");

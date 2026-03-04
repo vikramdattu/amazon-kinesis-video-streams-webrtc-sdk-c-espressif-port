@@ -357,10 +357,15 @@ esp_err_t esp_video_if_deinit(void)
 
     ESP_LOGD(TAG, "Deinitializing camera hardware (keeping buffers for reuse)");
 
-    // Stop streaming first (stops frame capture and reduces power consumption)
+    // Stop streaming first (STREAMOFF unblocks any pending DQBUF)
     esp_video_if_stop();
 
 #if USE_V4L2_USERPTR
+    /* Allow any concurrent DQBUF ioctl to finish returning after STREAMOFF
+     * before closing the fd. Without this, close() destroys the V4L2 device
+     * structures while DQBUF is still unwinding, causing a spinlock crash. */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
     /* For USERPTR: Close fd to power down hardware, but keep buffer memory */
     if (g_v4l2->cap_fd >= 0) {
         close(g_v4l2->cap_fd);

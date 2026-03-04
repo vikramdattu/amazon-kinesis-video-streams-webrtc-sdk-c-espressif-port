@@ -3,6 +3,7 @@ idf_component_register(SRCS
                         "power_save_handler.c"
                         "trigger_offer_command.c"
                         "query_resolution_command.c"
+                        "query_snapshot_command.c"
                     INCLUDE_DIRS "."
                     REQUIRES
                         "app_common"

@@ -27,12 +27,9 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 #define BRIDGE_CMD_GET_RESOLUTION   0x0001  /**< Query camera resolution (P4 responds) */
+#define BRIDGE_CMD_GET_SNAPSHOT     0x0003  /**< Capture a JPEG snapshot (P4 responds) */
 #define BRIDGE_CMD_GET_ICE_SERVER   0x0004  /**< Request ICE server by index (C6 responds) */
 #define BRIDGE_CMD_GET_TIME         0x0005  /**< Request current time from C6 (C6 responds) */
-
-/* Future commands:
- * #define BRIDGE_CMD_GET_SNAPSHOT     0x0003
- */
 
 /* -------------------------------------------------------------------------- */
 /*  Payload structures                                                        */
@@ -48,6 +45,15 @@ typedef struct {
     uint32_t width;     /**< Frame width in pixels */
     uint32_t height;    /**< Frame height in pixels */
 } bridge_cmd_resolution_t;
+
+/**
+ * @brief Request payload for BRIDGE_CMD_GET_SNAPSHOT
+ *
+ * Sent by C6 (signaling_only) to request a JPEG snapshot from P4.
+ */
+typedef struct {
+    uint8_t quality;    /**< JPEG quality 1-100 (0 = default 80) */
+} bridge_cmd_snapshot_req_t;
 
 #ifdef __cplusplus
 }

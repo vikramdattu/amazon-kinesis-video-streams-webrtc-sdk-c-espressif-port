@@ -83,6 +83,14 @@ void esp_video_if_release_frame(video_fb_t *fb);
 esp_err_t esp_video_if_get_resolution(video_resolution_t *resolution);
 
 /**
+ * @brief Set desired resolution before init (called by video_capture_adapter)
+ *
+ * @param resolution Desired resolution (width, height, fps). Use 0 for width/height to use defaults.
+ * @return esp_err_t ESP_OK on success
+ */
+esp_err_t esp_video_if_set_desired_resolution(const video_resolution_t *resolution);
+
+/**
  * @brief Cleanup mapped buffers and close camera fd
  *
  * This function explicitly frees mapped buffers and closes the camera file

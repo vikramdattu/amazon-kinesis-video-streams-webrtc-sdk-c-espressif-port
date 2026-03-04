@@ -23,9 +23,9 @@
 #define DEFAULT_THREAD_SIZE (16 * 1024)
 #endif
 
-#ifndef DEFAULT_THREAD_NAME
-#define DEFAULT_THREAD_NAME "pthread"
-#endif
+/* Note: lwIP's opt.h also defines DEFAULT_THREAD_NAME as "lwIP".
+ * Use a distinct name to avoid macro collision. */
+#define KVS_DEFAULT_THREAD_NAME     "kvs_pthread"
 
 // Max thread name buffer length - similar to Linux platforms
 #ifndef MAX_THREAD_NAME
@@ -239,7 +239,7 @@ STATUS defaultCreateThreadPriWithCaps(PTID pThreadId, PCHAR threadName, UINT32 t
     }
 
     if (threadName == NULL) {
-        pthread_cfg.thread_name = DEFAULT_THREAD_NAME;
+        pthread_cfg.thread_name = KVS_DEFAULT_THREAD_NAME;
     } else {
         pthread_cfg.thread_name = threadName;
     }

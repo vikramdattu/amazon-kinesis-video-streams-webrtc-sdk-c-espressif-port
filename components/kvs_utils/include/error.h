@@ -27,12 +27,15 @@ extern "C" {
  * CRITICAL: Handle STATUS conflict with ESP-IDF's ets_sys.h
  * Include ets_sys.h FIRST to let it define its STATUS enum,
  * then immediately undefine it before defining our STATUS macro.
+ * On Linux target, ets_sys.h does not exist so skip this.
  */
+#if __has_include(<rom/ets_sys.h>)
 #include <rom/ets_sys.h>
 
 /* Undefine ESP-IDF's STATUS enum */
 #ifdef ETS_OK
 #undef STATUS
+#endif
 #endif
 
 #ifndef UINT32

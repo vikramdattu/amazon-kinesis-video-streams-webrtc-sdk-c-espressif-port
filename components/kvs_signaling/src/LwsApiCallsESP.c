@@ -1435,8 +1435,11 @@ STATUS describeChannelEsp(PSignalingClient pSignalingClient, UINT64 time)
     retStatus = performEspHttpRequest(pSignalingClient, url, HTTP_METHOD_POST,
                                      paramsJson, &pResponseStr, &resultLen);
 
-    // Set the service call result
-    ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) retStatus);
+    // Note: performEspHttpRequest already sets pSignalingClient->result with SERVICE_CALL_RESULT on error
+    // Only set it here if the request succeeded but we have other issues
+    if (STATUS_SUCCEEDED(retStatus) && (resultLen == 0 || pResponseStr == NULL)) {
+        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+    }
 
     // Early return if we have a non-success result
     CHK(STATUS_SUCCEEDED(retStatus) && resultLen != 0 && pResponseStr != NULL, STATUS_SIGNALING_LWS_CALL_FAILED);
@@ -1517,7 +1520,19 @@ STATUS describeChannelEsp(PSignalingClient pSignalingClient, UINT64 time)
 CleanUp:
     if (STATUS_FAILED(retStatus)) {
         DLOGE("Call Failed with Status: 0x%08x", retStatus);
-        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+        // Only set SERVICE_CALL_RESULT if result hasn't been set by performEspHttpRequest
+        // Check if result is still NOT_SET or was set to a specific error
+        SIZE_T currentResult = ATOMIC_LOAD(&pSignalingClient->result);
+        if (currentResult == SERVICE_CALL_RESULT_NOT_SET) {
+            // Convert specific STATUS codes to appropriate SERVICE_CALL_RESULT
+            if (retStatus == STATUS_INVALID_API_CALL_RETURN_JSON) {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_INTERNAL_ERROR);
+            } else {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+            }
+        }
+        // Otherwise, performEspHttpRequest already set an appropriate SERVICE_CALL_RESULT
+        // or the function set SERVICE_CALL_RESULT_OK for graceful failure
     }
 
     SAFE_MEMFREE(pResponseStr);
@@ -1704,8 +1719,11 @@ STATUS getChannelEndpointEsp(PSignalingClient pSignalingClient, UINT64 time)
     retStatus = performEspHttpRequest(pSignalingClient, url, HTTP_METHOD_POST,
                                      paramsJson, &pResponseStr, &resultLen);
 
-    // Set the service call result
-    ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) retStatus);
+    // Note: performEspHttpRequest already sets pSignalingClient->result with SERVICE_CALL_RESULT on error
+    // Only set it here if the request succeeded but we have other issues
+    if (STATUS_SUCCEEDED(retStatus) && (resultLen == 0 || pResponseStr == NULL)) {
+        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+    }
 
     // Early return if we have a non-success result
     CHK(STATUS_SUCCEEDED(retStatus) && resultLen != 0 && pResponseStr != NULL, STATUS_SIGNALING_LWS_CALL_FAILED);
@@ -1719,7 +1737,6 @@ STATUS getChannelEndpointEsp(PSignalingClient pSignalingClient, UINT64 time)
     pSignalingClient->channelEndpointWss[0] = '\0';
     pSignalingClient->channelEndpointHttps[0] = '\0';
     pSignalingClient->channelEndpointWebrtc[0] = '\0';
-
     // Loop through the tokens and extract the stream description
     for (i = 1; i < tokenCount; i++) {
         if (!jsonInResourceEndpointList) {
@@ -1793,8 +1810,30 @@ STATUS getChannelEndpointEsp(PSignalingClient pSignalingClient, UINT64 time)
 
 CleanUp:
     if (STATUS_FAILED(retStatus)) {
-        DLOGE("Call Failed with Status: 0x%08x", retStatus);
-        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+        SIZE_T currentResult = ATOMIC_LOAD(&pSignalingClient->result);
+
+        // Convert specific STATUS codes to appropriate SERVICE_CALL_RESULT
+        // This will overwrite SERVICE_CALL_RESULT_OK if HTTP succeeded but parsing failed
+        if (currentResult == SERVICE_CALL_RESULT_NOT_SET || currentResult == SERVICE_CALL_RESULT_OK) {
+            // HTTP request might have succeeded but parsing/validation failed
+            if (retStatus == STATUS_SIGNALING_MISSING_ENDPOINTS_IN_GET_ENDPOINT) {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_BAD_REQUEST);
+            } else if (retStatus == STATUS_INVALID_API_CALL_RETURN_JSON) {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_INTERNAL_ERROR);
+            } else if (retStatus == STATUS_SIGNALING_LWS_CALL_FAILED) {
+                // This means HTTP request failed or returned empty response
+                // Keep existing result if set, otherwise set UNKNOWN
+                if (currentResult == SERVICE_CALL_RESULT_NOT_SET) {
+                    ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+                }
+            } else {
+                // For other errors, set UNKNOWN only if not already set
+                if (currentResult == SERVICE_CALL_RESULT_NOT_SET) {
+                    ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+                }
+            }
+        }
+        // Otherwise, performEspHttpRequest already set an appropriate SERVICE_CALL_RESULT
     }
 
     SAFE_MEMFREE(pResponseStr);
@@ -1868,8 +1907,11 @@ STATUS getIceConfigEsp(PSignalingClient pSignalingClient, UINT64 time)
         goto CleanUp;
     }
 
-    // Set the service call result
-    ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) retStatus);
+    // Note: performEspHttpRequest already sets pSignalingClient->result with SERVICE_CALL_RESULT on error
+    // Only set it here if the request succeeded but we have other issues
+    if (STATUS_SUCCEEDED(retStatus) && (resultLen == 0 || pResponseStr == NULL)) {
+        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+    }
 
     // Early return if we have a non-success result
     CHK(STATUS_SUCCEEDED(retStatus) && resultLen != 0 && pResponseStr != NULL, STATUS_SIGNALING_LWS_CALL_FAILED);
@@ -1946,7 +1988,19 @@ STATUS getIceConfigEsp(PSignalingClient pSignalingClient, UINT64 time)
 CleanUp:
     if (STATUS_FAILED(retStatus)) {
         DLOGE("Call Failed with Status: 0x%08x", retStatus);
-        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+        // Only set SERVICE_CALL_RESULT if result hasn't been set by performEspHttpRequest
+        // Check if result is still NOT_SET or was set to a specific error
+        SIZE_T currentResult = ATOMIC_LOAD(&pSignalingClient->result);
+        if (currentResult == SERVICE_CALL_RESULT_NOT_SET) {
+            // Convert specific STATUS codes to appropriate SERVICE_CALL_RESULT
+            if (retStatus == STATUS_INVALID_API_CALL_RETURN_JSON) {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_INTERNAL_ERROR);
+            } else {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_UNKNOWN);
+            }
+        }
+        // Otherwise, performEspHttpRequest already set an appropriate SERVICE_CALL_RESULT
+        // or the function set SERVICE_CALL_RESULT_OK for graceful failure
     }
 
     SAFE_MEMFREE(pResponseStr);
@@ -2382,17 +2436,34 @@ STATUS performEspHttpRequest(PSignalingClient pSignalingClient, PCHAR url,
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "HTTP request failed with error 0x%x: %s", err, esp_err_to_name(err));
+        // Store network connection timeout as the result
+        if (pSignalingClient != NULL) {
+            ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_NETWORK_CONNECTION_TIMEOUT);
+        }
         CHK(FALSE, STATUS_INTERNAL_ERROR);
     }
 
     // Check status code
     int statusCode = esp_http_client_get_status_code(client);
+
     if (statusCode < 200 || statusCode >= 300) {
         ESP_LOGE(TAG, "HTTP request failed with status code %d", statusCode);
         if (response != NULL && responseLen > 0) {
-            ESP_LOGE(TAG, "Response data: %.*s", (int) responseLen, response);
+            UINT32 previewLen = MIN(responseLen, 500);
+            ESP_LOGE(TAG, "Error response (first %u bytes): %.*s", previewLen, previewLen, response);
+        }
+        // Convert HTTP status code to SERVICE_CALL_RESULT and store it
+        if (pSignalingClient != NULL) {
+            SERVICE_CALL_RESULT serviceCallResult = getServiceCallResultFromHttpStatus(statusCode);
+            ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) serviceCallResult);
         }
         CHK(FALSE, STATUS_INTERNAL_ERROR);
+    }
+
+    // HTTP request succeeded - set result to OK before parsing
+    // This ensures the state machine sees a valid result even if parsing fails
+    if (pSignalingClient != NULL) {
+        ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
     }
 
     // Set response if requested

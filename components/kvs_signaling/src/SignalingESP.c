@@ -118,6 +118,47 @@ CleanUp:
 }
 
 /**
+ * @brief Delete signaling cache from NVS storage
+ *
+ * @param channelName Channel name
+ * @param region AWS region
+ * @param role Channel role type
+ * @return STATUS_SUCCESS on success
+ */
+static STATUS signalingCacheDeleteFromNvs(PCHAR channelName, PCHAR region, SIGNALING_CHANNEL_ROLE_TYPE role)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    CHAR nvsKey[MAX_NVS_KEY_LEN];
+    esp_err_t espRet;
+
+    CHK(channelName != NULL && region != NULL, STATUS_NULL_ARG);
+
+    // Generate NVS key for this cache entry
+    CHK_STATUS(generateSignalingCacheNvsKey(channelName, region, role, nvsKey, SIZEOF(nvsKey)));
+
+    DLOGI("Deleting signaling cache from NVS: namespace=%s, key=%s (channel='%s', region='%s', role=%d)",
+          SIGNALING_NVS_NAMESPACE, nvsKey, channelName, region, role);
+
+    // Erase cache entry from NVS using direct API
+    espRet = flash_wrapper_nvs_erase(SIGNALING_NVS_NAMESPACE, nvsKey);
+    if (espRet == ESP_OK) {
+        DLOGI("Successfully deleted signaling cache from NVS: channel=%s, region=%s, role=%d",
+              channelName, region, role);
+    } else if (espRet == ESP_ERR_NVS_NOT_FOUND) {
+        DLOGI("Cache entry not found in NVS (already deleted or never existed)");
+        // Not an error - cache might not exist
+    } else {
+        DLOGW("Failed to delete signaling cache from NVS: esp_err=0x%x", espRet);
+        // Don't fail - cache deletion is best effort
+    }
+
+CleanUp:
+    LEAVES();
+    return retStatus;
+}
+
+/**
  * @brief Save signaling cache to NVS storage
  *
  * @param pFileCacheEntry Cache entry to save
@@ -1327,7 +1368,30 @@ STATUS getChannelEndpoint(PSignalingClient pSignalingClient, UINT64 time)
                 retStatus = pSignalingClient->clientInfo.getEndpointPostHookFn(pSignalingClient->clientInfo.hookCustomData);
             }
         } else {
-            ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
+            // Verify cached endpoints are valid
+            if (pSignalingClient->channelEndpointHttps[0] == '\0' || pSignalingClient->channelEndpointWss[0] == '\0') {
+                DLOGE("Cached endpoints are invalid! HTTPS empty=%d, WSS empty=%d",
+                      pSignalingClient->channelEndpointHttps[0] == '\0', pSignalingClient->channelEndpointWss[0] == '\0');
+                // Invalidate cache and delete corrupted entry to force API call on next retry
+                pSignalingClient->getEndpointTime = INVALID_TIMESTAMP_VALUE;
+                // Clear corrupted endpoint strings
+                pSignalingClient->channelEndpointHttps[0] = '\0';
+                pSignalingClient->channelEndpointWss[0] = '\0';
+                pSignalingClient->channelEndpointWebrtc[0] = '\0';
+                // Delete corrupted cache entry from NVS
+                PCHAR channelName = pSignalingClient->pChannelInfo->pChannelName != NULL ?
+                                    pSignalingClient->pChannelInfo->pChannelName :
+                                    pSignalingClient->pChannelInfo->pChannelArn;
+                if (channelName != NULL) {
+                    signalingCacheDeleteFromNvs(channelName, pSignalingClient->pChannelInfo->pRegion,
+                                                pSignalingClient->pChannelInfo->channelRoleType);
+                }
+                // Set error - state machine will retry and see invalid timestamp, forcing API call
+                retStatus = STATUS_SIGNALING_MISSING_ENDPOINTS_IN_GET_ENDPOINT;
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_BAD_REQUEST);
+            } else {
+                ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
+            }
         }
     }
 

@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -168,7 +169,7 @@ ssize_t rb_available(rb_handle_t handle)
     return (rb->size - rb->fill_cnt);
 }
 
-int rb_read(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait)
+static int rb_read_peek(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait, bool peek)
 {
     if (handle == NULL) {
         ESP_LOGE(TAG, "handle is NULL");
@@ -195,30 +196,37 @@ int rb_read(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wai
 
     xSemaphoreTake(rb->lock, portMAX_DELAY);
 
+    uint8_t *volatile readptr = rb->readptr;
     while (buf_len) {
         if (rb->fill_cnt < buf_len) {
             read_size = rb->fill_cnt;
         } else {
             read_size = buf_len;
         }
-        if ((rb->readptr + read_size) > (rb->base + rb->size)) {
-            int rlen1 = rb->base + rb->size - rb->readptr;
+        if ((readptr + read_size) > (rb->base + rb->size)) {
+            int rlen1 = rb->base + rb->size - readptr;
             int rlen2 = read_size - rlen1;
             if (buf) {
-                memcpy(buf, rb->readptr, rlen1);
+                memcpy(buf, readptr, rlen1);
                 memcpy(buf + rlen1, rb->base, rlen2);
             }
-            rb->readptr = rb->base + rlen2;
+            readptr = rb->base + rlen2;
         } else {
             if (buf) {
-                memcpy(buf, rb->readptr, read_size);
+                memcpy(buf, readptr, read_size);
             }
-            rb->readptr = rb->readptr + read_size;
+            readptr = readptr + read_size;
         }
 
         buf_len -= read_size;
-        rb->fill_cnt -= read_size;
+
+        if (!peek) {
+            rb->fill_cnt -= read_size;
+            rb->readptr = readptr;
+        }
+
         total_read_size += read_size;
+
         if (buf) {
             buf += read_size;
         }
@@ -261,6 +269,16 @@ out:
     }
     rb->reader_unblock = 0; /* We are anyway unblocking reader */
     return total_read_size;
+}
+
+int rb_peek(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait)
+{
+    return rb_read_peek(handle, buf, buf_len, ticks_to_wait, true);
+}
+
+int rb_read(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait)
+{
+    return rb_read_peek(handle, buf, buf_len, ticks_to_wait, false);
 }
 
 int rb_write(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait)

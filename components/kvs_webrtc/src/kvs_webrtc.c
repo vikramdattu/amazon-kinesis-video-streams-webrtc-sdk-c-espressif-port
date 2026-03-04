@@ -139,7 +139,8 @@ static STATUS kvs_applyNewIceServersCallback(UINT64 callerData, PHashEntry pHash
                 }
             }
 
-            // Now use the new API to dynamically add TURN servers to the existing peer connection
+            // Dynamic update: iceAgentAddIceServers will skip TURN relay candidate creation
+            // if ICE has already reached CONNECTED state, avoiding the race condition.
             ESP_LOGI(TAG, "Dynamically adding %" PRIu32 " TURN servers to peer connection: %s",
                      newTurnServerCount, session->peer_id);
 

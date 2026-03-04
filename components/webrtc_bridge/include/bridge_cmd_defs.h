@@ -55,6 +55,17 @@ typedef struct {
     uint8_t quality;    /**< JPEG quality 1-100 (0 = default 80) */
 } bridge_cmd_snapshot_req_t;
 
+/**
+ * @brief Request payload for BRIDGE_CMD_GET_ICE_SERVER
+ *
+ * Sent by P4 (streaming_only) to request an ICE server at given index from C6.
+ * Response payload is ss_ice_server_response_t (from signaling_serializer).
+ */
+typedef struct {
+    uint32_t index;     /**< ICE server index (0 = STUN, 1+ = TURN) */
+    uint8_t use_turn;   /**< Whether to request TURN servers */
+} bridge_cmd_ice_request_t;
+
 #ifdef __cplusplus
 }
 #endif

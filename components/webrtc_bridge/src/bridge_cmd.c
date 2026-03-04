@@ -31,6 +31,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_work_queue.h"
 #include "message_utils.h"
 #include "webrtc_bridge.h"
@@ -971,7 +972,7 @@ static void bridge_cmd_process_message(const uint8_t *data, size_t data_len)
         item->req_len = 0;
 
         if (cmd->payload.len > 0 && cmd->payload.data) {
-            item->req_data = malloc(cmd->payload.len);
+            item->req_data = bridge_cmd_alloc_payload(cmd->payload.len);
             if (item->req_data) {
                 memcpy(item->req_data, cmd->payload.data, cmd->payload.len);
                 item->req_len = cmd->payload.len;

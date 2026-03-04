@@ -45,6 +45,8 @@ static const char *TAG = "signaling_only";
 extern int trigger_offer_command_register_cli(void);
 extern int query_resolution_command_register_cli(void);
 extern int query_resolution_command_register_response_handler(void);
+extern int query_snapshot_command_register_cli(void);
+extern int query_snapshot_command_register_response_handler(void);
 
 // Global configuration - keep same structure as before for IoT Core compatibility
 static kvs_signaling_config_t g_kvsSignalingConfig = {0};
@@ -176,6 +178,7 @@ void app_main(void)
     // power_save_register_cli();
     trigger_offer_command_register_cli();
     query_resolution_command_register_cli();
+    query_snapshot_command_register_cli();
 
     s_wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -328,8 +331,10 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to initialize bridge command subsystem");
     } else {
         query_resolution_command_register_response_handler();
+        query_snapshot_command_register_response_handler();
     }
 
     ESP_LOGI(TAG, "Signaling-only example finished initialization");
     ESP_LOGI(TAG, "Use 'query-resolution' CLI command to query camera resolution from P4");
+    ESP_LOGI(TAG, "Use 'query-snapshot [quality]' CLI command to capture JPEG snapshot from P4");
 }

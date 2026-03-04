@@ -21,6 +21,7 @@
 #include "app_storage.h"
 
 #include "media_stream.h"
+#include "video_capture.h"
 #include "signaling_serializer.h"
 #include "webrtc_bridge.h"
 #include "webrtc_bridge_signaling.h"
@@ -271,6 +272,43 @@ static esp_err_t handle_get_resolution(uint32_t cmd_id,
     return ESP_OK;
 }
 
+/**
+ * Handle BRIDGE_CMD_GET_SNAPSHOT from the signaling device (C6).
+ * Captures a JPEG snapshot and returns it as the response payload.
+ * The bridge_cmd framework handles chunking automatically.
+ */
+static esp_err_t handle_get_snapshot(uint32_t cmd_id,
+                                     const uint8_t *req_data, size_t req_len,
+                                     uint8_t **resp_data, size_t *resp_len)
+{
+    uint8_t quality = 80;  /* Default JPEG quality */
+
+    /* Parse optional request payload for quality setting */
+    if (req_data && req_len >= sizeof(bridge_cmd_snapshot_req_t)) {
+        const bridge_cmd_snapshot_req_t *req = (const bridge_cmd_snapshot_req_t *)req_data;
+        if (req->quality > 0 && req->quality <= 100) {
+            quality = req->quality;
+        }
+    }
+
+    ESP_LOGI(TAG, "GET_SNAPSHOT requested (quality=%u)", quality);
+
+    uint8_t *jpeg_buf = NULL;
+    size_t jpeg_len = 0;
+
+    esp_err_t ret = video_capture_get_snapshot(&jpeg_buf, &jpeg_len, quality, 5000);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to capture snapshot: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "GET_SNAPSHOT -> JPEG %zu bytes (quality=%u)", jpeg_len, quality);
+
+    *resp_data = jpeg_buf;
+    *resp_len = jpeg_len;
+    return ESP_OK;
+}
+
 static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *user_ctx)
 {
     if (event_data == NULL) {
@@ -481,6 +519,7 @@ void app_main(void)
      * Initialize bridge command framework and register example-specific handlers. */
     if (bridge_cmd_init() == ESP_OK) {
         bridge_cmd_register_handler(BRIDGE_CMD_GET_RESOLUTION, handle_get_resolution);
+        bridge_cmd_register_handler(BRIDGE_CMD_GET_SNAPSHOT, handle_get_snapshot);
     } else {
         ESP_LOGE(TAG, "Failed to initialize bridge command subsystem");
     }

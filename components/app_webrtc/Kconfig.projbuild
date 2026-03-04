@@ -17,4 +17,13 @@ menu "App WebRTC Configuration"
             Maximum number of event callback handlers that can be registered.
             Each handler receives all WebRTC events. Increase if you need more handlers.
 
+    config APP_WEBRTC_TASK_STACK_SIZE
+        int "WebRTC run task stack size (bytes)"
+        default 16384
+        range 8192 65536
+        help
+            Stack size for the main WebRTC run task. Use 16384 when using
+            esp_websocket_client based signaling. Increase to 32K when using
+            libwebsockets based signaling which requires more stack.
+
 endmenu

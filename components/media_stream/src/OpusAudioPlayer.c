@@ -45,7 +45,7 @@ static esp_codec_dev_handle_t spk_codec_dev = NULL;
 #define OPUS_CHANNELS           (2)
 #define OPUS_OUTPUT_BUFFER_SIZE (4096)
 #define CODEC_SAMPLE_RATE       (16000)
-#define OPUS_PLAYER_OUT_RB_SIZE (32000)
+#define OPUS_PLAYER_OUT_RB_SIZE (64000)
 #define CODEC_CHANNELS          (1)
 
 static int decode_one_frame(uint8_t *data, int size)
@@ -149,7 +149,19 @@ esp_err_t opus_player_decode_and_play_one_frame(uint8_t *data, size_t size)
 {
     // printf("Decoding and playing one frame %p of size %zu\n", data, size);
 
+    static uint64_t total_time = 0, fc = 0;
+    static const int BM_FRAMES = 10;
+
+    uint64_t st = esp_timer_get_time();
     decode_one_frame(data, size);
+    uint64_t et = esp_timer_get_time();
+
+    total_time += et - st;
+
+    if (fc++ % BM_FRAMES == 0) {
+        ESP_LOGD(TAG, "time per frame: %" PRIu64 "ms", (total_time / BM_FRAMES) / 1000);
+        total_time = 0;
+    }
 
 #if 0
     size_t bytes_written = 0;
@@ -166,7 +178,7 @@ esp_err_t opus_player_decode_and_play_one_frame(uint8_t *data, size_t size)
         return ESP_FAIL;
     }
 #else
-    rb_write(rb_handle, write_ctx.out_frame.buffer, write_ctx.out_frame.decoded_size, 10);
+    rb_write(rb_handle, write_ctx.out_frame.buffer, write_ctx.out_frame.decoded_size, portMAX_DELAY);
 #endif
     return ESP_OK;
 }
@@ -210,9 +222,9 @@ typedef struct frame_data_t {
     size_t len; // size of the data
 } frame_data_t;
 
-#define MAX_QUEUE_SIZE 10
+#define MAX_QUEUE_SIZE 100
 #define QUEUE_RECV_TIMEOUT pdMS_TO_TICKS(20)
-#define QUEUE_SEND_TIMEOUT pdMS_TO_TICKS(10)
+#define QUEUE_SEND_TIMEOUT pdMS_TO_TICKS(50)
 
 static QueueHandle_t frame_queue = NULL;
 
@@ -221,7 +233,7 @@ static void opus_player_task(void *arg)
     frame_data_t frame = {0};
     while(1) {
         if (xQueueReceive(frame_queue, &frame, QUEUE_RECV_TIMEOUT) != pdTRUE) {
-            ESP_LOGV(TAG, "No frame to decode");
+            // ESP_LOGI(TAG, "No frame to decode");
             continue;
         }
         opus_player_decode_and_play_one_frame(frame.data, frame.len);
@@ -320,7 +332,7 @@ esp_err_t OpusAudioPlayerInit()
     }
 
 #define I2S_SYNC_TASK_STACK_SIZE     (10 * 1024)
-#define I2S_SYNC_TASK_PRIO           (6) // IO sensitive task
+#define I2S_SYNC_TASK_PRIO           (10) // IO sensitive task
     StaticTask_t *i2s_write_task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
     void *i2s_write_task_stack = heap_caps_calloc(1, I2S_SYNC_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM);
     if (i2s_write_task_buffer == NULL || i2s_write_task_stack == NULL) {
@@ -384,9 +396,16 @@ esp_err_t OpusAudioPlayerDecode(uint8_t *data, size_t size)
     frame.data = data_dup;
     frame.len = size;
     if (xQueueSend(frame_queue, &frame, QUEUE_SEND_TIMEOUT) != pdTRUE) {
-        ESP_LOGV(TAG, "Failed to insert frame into queue");
-        heap_caps_free(data_dup);
-        return ESP_FAIL;
+        ESP_LOGI(TAG, "Failed to insert frame into queue");
+        frame_data_t f = {0};
+        xQueueReceive(frame_queue, &f, 1);
+        if (f.data) {
+            heap_caps_free(f.data);
+        }
+        if (xQueueSend(frame_queue, &frame, 1) != pdTRUE) {
+            heap_caps_free(data_dup);
+            return ESP_FAIL;
+        }
     }
 #else
     return opus_player_decode_and_play_one_frame(data, size);

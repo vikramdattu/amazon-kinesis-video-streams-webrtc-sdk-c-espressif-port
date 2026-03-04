@@ -278,6 +278,36 @@ For detailed API usage and implementation guides:
 - **[API_USAGE.md](API_USAGE.md)** - **Complete API documentation** featuring the new simplified API, configuration options, and usage examples for all deployment modes
 - **[CUSTOM_SIGNALING.md](CUSTOM_SIGNALING.md)** - **Comprehensive guide** for implementing custom signaling protocols using the pluggable architecture
 
+## Migrating from `beta-reference-esp-port` Branch
+
+This repository replaces the `esp_port/` subdirectory that previously lived inside the upstream [`awslabs/amazon-kinesis-video-streams-webrtc-sdk-c`](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c) repository on the `beta-reference-esp-port` branch.
+
+### What Changed
+
+The `esp_port/` directory prefix has been removed. Components and examples now live at the repository root:
+
+| Before (upstream `beta-reference-esp-port`) | After (this repo) |
+|---|---|
+| `${KVS_SDK_PATH}/esp_port/components/<name>` | `${KVS_SDK_PATH}/components/<name>` |
+| `${KVS_SDK_PATH}/esp_port/examples/<name>` | `${KVS_SDK_PATH}/examples/<name>` |
+
+### Updating `idf_component.yml` References
+
+If your project uses `idf_component.yml` to reference KVS SDK components via `path:` or `override_path:`, remove the `esp_port/` segment from every path:
+
+```diff
+  app_webrtc:
+-   path: ${KVS_SDK_PATH}/esp_port/components/app_webrtc
++   path: ${KVS_SDK_PATH}/components/app_webrtc
+    version: "*"
+```
+
+This applies to all component references: `app_webrtc`, `esp_webrtc_utils`, `kvs_webrtc`, `kvs_signaling`, `media_stream`, `network_coprocessor`, `signaling_bridge_adapter`, etc.
+
+### No API Changes
+
+All component APIs remain the same. No changes are needed in application source code (`.c` / `.h` files).
+
 ## License
 
 This project is licensed under the Apache-2.0 License.

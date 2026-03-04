@@ -132,7 +132,22 @@ ssize_t rb_available(rb_handle_t handle);
 int rb_read(rb_handle_t handle, uint8_t *buf, int len, uint32_t ticks_to_wait);
 
 /**
- * @brief Read from ring buffer
+ * @brief Peek from ring buffer
+ *
+ * @param[in]  rb Ringbuffer handle
+ * @param[in]  buf Buffer to read data in
+ * @param[in]  len size of data to be read
+ * @param[in]  ticks_to_wait Max wait ticks if data not available
+ *
+ * @return
+ *     - Number of bytes peeked
+ *     - -ve value indicating error.
+ *
+ */
+int rb_peek(rb_handle_t handle, uint8_t *buf, int buf_len, uint32_t ticks_to_wait);
+
+/**
+ * @brief Write to ring buffer
  *
  * @param[in]  rb Ringbuffer handle
  * @param[in]  buf Buffer to write data from

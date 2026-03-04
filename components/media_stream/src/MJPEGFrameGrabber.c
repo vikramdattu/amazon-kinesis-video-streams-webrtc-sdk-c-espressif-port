@@ -281,13 +281,24 @@ esp_err_t mjpeg_camera_and_encoder_init(uint16_t width, uint16_t height, uint8_t
     }
 
 #elif CONFIG_IDF_TARGET_ESP32P4
-    // Initialize video interface
+    /* Set desired resolution before init so esp_video_if configures correctly */
+    video_resolution_t res = { .width = width, .height = height, .fps = 25 };
+    esp_video_if_set_desired_resolution(&res);
+
     esp_err_t ret = esp_video_if_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Video initialization failed: %d", ret);
         vQueueDelete(mjpeg_frame_queue);
         mjpeg_frame_queue = NULL;
         return ret;
+    }
+
+    /* Use actual capture resolution from esp_video_if (driver may differ from config) */
+    video_resolution_t actual_res;
+    if (esp_video_if_get_resolution(&actual_res) == ESP_OK && actual_res.width > 0 && actual_res.height > 0) {
+        frame_width = (uint16_t)actual_res.width;
+        frame_height = (uint16_t)actual_res.height;
+        ESP_LOGI(TAG, "Using actual capture resolution: %ux%u", (unsigned)frame_width, (unsigned)frame_height);
     }
 
     // Initialize the JPEG encoder

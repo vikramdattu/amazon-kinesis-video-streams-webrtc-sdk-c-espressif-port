@@ -1,0 +1,12 @@
+description: "Simple video server - direct V4L2 or media_stream capture"
+dependencies:
+  espressif/esp_video:
+    version: "*"
+  espressif/example_video_common:
+    version: "*"
+  media_stream:
+    path: "../../../components/media_stream"
+  protocol_examples_common:
+    path: ${IDF_PATH}/examples/common_components/protocol_examples_common
+  espressif/mdns:
+    version: "^1.0.3"

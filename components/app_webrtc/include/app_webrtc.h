@@ -219,9 +219,9 @@ WEBRTC_STATUS app_webrtc_set_ice_config(bool trickle_ice, bool use_turn);
  * By default, log level is set to INFO (level 3).
  * This function allows runtime override of the log level.
  *
- * Levels: 0=PROFILE, 1=VERBOSE, 2=DEBUG, 3=INFO, 4=WARN, 5=ERROR, 6=FATAL, 7=SILENT, 8=PROFILE
+ * Levels: 0=PROFILE, 1=VERBOSE, 2=DEBUG, 3=INFO, 4=WARN, 5=ERROR, 6=FATAL, 7=SILENT
  *
- * @param[in] level Log level (0-8)
+ * @param[in] level Log level (0-7)
  * @return WEBRTC_STATUS code of the execution
  */
 WEBRTC_STATUS app_webrtc_set_log_level(uint32_t level);

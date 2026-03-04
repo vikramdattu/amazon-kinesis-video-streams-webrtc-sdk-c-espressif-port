@@ -326,13 +326,10 @@ void app_main(void)
         ESP_LOGI(TAG, "WebRTC application started successfully");
     }
 
-    /* Initialize bridge command framework (bridge is started inside app_webrtc_run) */
-    if (bridge_cmd_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize bridge command subsystem");
-    } else {
-        query_resolution_command_register_response_handler();
-        query_snapshot_command_register_response_handler();
-    }
+    /* bridge_cmd handlers (GET_TIME) are registered internally by
+     * signaling_bridge_adapter_init. Register CLI response handlers here. */
+    query_resolution_command_register_response_handler();
+    query_snapshot_command_register_response_handler();
 
     ESP_LOGI(TAG, "Signaling-only example finished initialization");
     ESP_LOGI(TAG, "Use 'query-resolution' CLI command to query camera resolution from P4");

@@ -386,15 +386,23 @@ static void esp_websocket_event_handler(void *handler_args, esp_event_base_t bas
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WEBSOCKET_EVENT_CONNECTED");
 
-            // Update connection state in both wrapper and signaling client
+            // Update connection state in both wrapper and signaling client.
+            // Guard: if wsClient has been cleared by terminateEspSignalingClient(),
+            // the client is being torn down — ignore this stale CONNECTED event to
+            // prevent the subsequent DISCONNECTED handler from re-triggering reconnection.
+            // All state updates are done under the lock so that terminateEspSignalingClient()
+            // (which also modifies these under the same lock) cannot interleave.
             MUTEX_LOCK(pEspWrapper->wsClientLock);
+            if (pEspWrapper->wsClient == NULL) {
+                MUTEX_UNLOCK(pEspWrapper->wsClientLock);
+                ESP_LOGW(TAG, "Ignoring CONNECTED event - client is being terminated");
+                break;
+            }
             pEspWrapper->isConnected = TRUE;
             pEspWrapper->connectionAwaitingConfirmation = FALSE;
-            MUTEX_UNLOCK(pEspWrapper->wsClientLock);
-
-            // Update signaling client state
             ATOMIC_STORE_BOOL(&pSignalingClient->connected, TRUE);
             ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
+            MUTEX_UNLOCK(pEspWrapper->wsClientLock);
 
             // Signal the condition variable to wake up the waiting thread
             MUTEX_LOCK(pSignalingClient->connectedLock);
@@ -1287,6 +1295,18 @@ STATUS connectEspSignalingClient(PSignalingClient pSignalingClient)
                  pSignalingClient->connectedLock,
                  500 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND); // 500ms polling interval
         MUTEX_UNLOCK(pSignalingClient->connectedLock);
+    }
+
+    // Post-loop recovery: The CONNECTED event may have fired from the WebSocket
+    // task between the timeout check and here. Re-check to avoid tearing down a
+    // connection that actually succeeded.
+    if (retStatus == STATUS_OPERATION_TIMED_OUT) {
+        connected = ATOMIC_LOAD_BOOL(&pSignalingClient->connected);
+        if (connected) {
+            ESP_LOGI(TAG, "WebSocket connected after timeout race - recovering");
+            ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
+            retStatus = STATUS_SUCCESS;
+        }
     }
 
     // Update connection status in the signaling client

@@ -1791,14 +1791,26 @@ static void app_webrtc_runTask(void *pvParameters)
     if (gWebRtcAppConfig.signaling_client_if != NULL && gWebRtcAppConfig.signaling_cfg != NULL) {
         DLOGD("Initializing signaling client using interface");
 
-        // Initialize the signaling client using the interface and opaque config
-        retStatus = gWebRtcAppConfig.signaling_client_if->init(
-            gWebRtcAppConfig.signaling_cfg,
-            &gSignalingClientData);
+        // Initialize the signaling client using the interface and opaque config.
+        // Retry indefinitely with exponential backoff on transient failures
+        // (e.g. WiFi not connected yet, DNS not ready). sessionCleanupWait
+        // only retries connect(), not init(), so init failures must be
+        // retried here. On an embedded device there is no human to intervene,
+        // so giving up is worse than retrying.
+        UINT32 init_delay_ms = 5000;
+        for (int attempt = 1; /* retry indefinitely */; attempt++) {
+            retStatus = gWebRtcAppConfig.signaling_client_if->init(
+                gWebRtcAppConfig.signaling_cfg,
+                &gSignalingClientData);
 
-        if (STATUS_FAILED(retStatus)) {
-            DLOGE("Failed to initialize signaling client: 0x%08x", retStatus);
-            CHK(FALSE, retStatus);
+            if (STATUS_SUCCEEDED(retStatus)) {
+                break;
+            }
+
+            ESP_LOGW(TAG, "Signaling init failed (attempt %d, ret 0x%08" PRIx32 "), retrying in %" PRIu32 " ms...",
+                     attempt, retStatus, init_delay_ms);
+            THREAD_SLEEP(init_delay_ms * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
+            init_delay_ms = MIN(init_delay_ms * 2, 60000);
         }
 
         DLOGI("Signaling client initialized successfully");
@@ -1919,11 +1931,7 @@ WEBRTC_STATUS app_webrtc_run(void)
     // Use a higher stack size for the WebRTC task as signaling requires substantial stack
     DLOGI("Creating WebRTC run task");
 
-#if CONFIG_USE_ESP_WEBSOCKET_CLIENT
-#define WEBRTC_TASK_STACK_SIZE     (16 * 1024)
-#else
-#define WEBRTC_TASK_STACK_SIZE     (36 * 1024)
-#endif
+#define WEBRTC_TASK_STACK_SIZE     CONFIG_APP_WEBRTC_TASK_STACK_SIZE
 #define WEBRTC_TASK_PRIO           5
     static StaticTask_t *task_buffer = NULL;
     static void *task_stack = NULL;

@@ -773,8 +773,8 @@ STATUS kvs_media_start_global_transmission(void* client_data, kvs_media_config_t
 
     // Start global video thread only if video capture is provided and initialized successfully
     if (config->video_capture != NULL && g_global_media.video_handle != NULL) {
-        CHK_STATUS(THREAD_CREATE_EX_PRI(&g_global_media.video_sender_tid, "kvsGlobalVideo", 8 * 1024, TRUE,
-                                        kvs_global_video_sender_thread, 6, NULL));
+        CHK_STATUS(THREAD_CREATE_EX_EXT(&g_global_media.video_sender_tid, "kvsGlobalVideo", 8 * 1024, TRUE,
+                                        kvs_global_video_sender_thread, NULL));
         ESP_LOGI(TAG, "Global video sender thread started");
     } else {
         if (config->video_capture != NULL) {
@@ -818,8 +818,8 @@ STATUS kvs_media_start_global_transmission(void* client_data, kvs_media_config_t
 
     // Start global audio thread only if audio capture is provided and initialized successfully
     if (config->audio_capture != NULL && g_global_media.audio_handle != NULL) {
-        CHK_STATUS(THREAD_CREATE_EX_PRI(&g_global_media.audio_sender_tid, "kvsGlobalAudio", 8 * 1024, TRUE,
-                                        kvs_global_audio_sender_thread, 6, NULL));
+        CHK_STATUS(THREAD_CREATE_EX_EXT(&g_global_media.audio_sender_tid, "kvsGlobalAudio", 8 * 1024, TRUE,
+                                        kvs_global_audio_sender_thread, NULL));
         ESP_LOGI(TAG, "Global audio sender thread started");
     } else if (config->audio_capture != NULL && g_global_media.audio_handle == NULL) {
         ESP_LOGW(TAG, "Audio capture provided but initialization failed - skipping audio transmission");
@@ -908,41 +908,8 @@ CleanUp:
     return retStatus;
 }
 
-/**
- * @brief Media reception routine - equivalent to receiveAudioVideoSource in app_webrtc.c
- */
-static PVOID kvs_media_reception_routine(PVOID customData)
-{
-    STATUS retStatus = STATUS_SUCCESS;
-    kvs_pc_session_t *session = (kvs_pc_session_t *)HANDLE_TO_POINTER(customData);
-
-    CHK(session != NULL, STATUS_NULL_ARG);
-
-    ESP_LOGD(TAG, "Media reception routine started for peer: %s", session->peer_id);
-
-    // Wait for connection to be established
-    while (!ATOMIC_LOAD_BOOL(&session->media_started) && !session->terminated) {
-        THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);  // 100ms
-    }
-
-    if (session->terminated) {
-        ESP_LOGD(TAG, "Media reception terminated before connection established");
-        goto CleanUp;
-    }
-
-    ESP_LOGD(TAG, "Setting up media reception for peer: %s", session->peer_id);
-
-    // Setup media players and frame callbacks happens in kvs_media_start_reception
-    // This thread just stays alive while reception is active
-    while (!session->terminated && ATOMIC_LOAD_BOOL(&session->media_started)) {
-        THREAD_SLEEP(100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND);  // 100ms
-    }
-
-CleanUp:
-    ESP_LOGD(TAG, "Media reception routine finished for peer: %s", session->peer_id);
-    CHK_LOG_ERR(retStatus);
-    return NULL;
-}
+// Reception routine removed — media reception is entirely callback-driven.
+// No dedicated thread needed; frame callbacks are set up in kvs_media_setup_players.
 
 // Note: kvs_media_start_transmission() removed - replaced with global transmission
 
@@ -960,12 +927,7 @@ STATUS kvs_media_start_reception(kvs_pc_session_t* session, kvs_media_config_t* 
     // Setup media players
     CHK_STATUS(kvs_media_setup_players(session, config));
 
-    // Start receive thread if needed
-    if (config->receive_media && !session->receive_thread_started) {
-        CHK_STATUS(THREAD_CREATE_EX_EXT(&session->receive_audio_video_tid, "kvs_receiveAV", 8 * 1024, TRUE,
-                                       kvs_media_reception_routine, (PVOID)session));
-        session->receive_thread_started = TRUE;
-    }
+    // Media reception is callback-driven — no dedicated thread needed
 
 CleanUp:
     return retStatus;
@@ -979,12 +941,6 @@ STATUS kvs_media_stop_session(kvs_pc_session_t* session)
 
     // Mark session as terminated (global media threads handle transmission termination separately)
     session->terminated = TRUE;
-
-    // Wait for session-specific receive thread to complete
-    if (session->receive_thread_started && IS_VALID_TID_VALUE(session->receive_audio_video_tid)) {
-        THREAD_JOIN(session->receive_audio_video_tid, NULL);
-        session->receive_thread_started = FALSE;
-    }
 
     // Cleanup media players (session-specific)
     if (session->client->config.video_player != NULL && session->video_player_handle != NULL) {

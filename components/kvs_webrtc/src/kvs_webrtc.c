@@ -396,7 +396,7 @@ static WEBRTC_STATUS kvs_pc_init(void *pc_cfg, void **ppPeerConnectionClient)
     CHK(IS_VALID_MUTEX_VALUE(client_data->ice_state_cleanup_mutex), STATUS_INVALID_OPERATION);
 
     // Initialize timer queue for KVS operations
-    CHK_STATUS(timerQueueCreate(&client_data->timer_queue));
+    CHK_STATUS(timerQueueCreateEx(&client_data->timer_queue, "kvsPeerConnTmr", 8 * 1024));
 
         // Set up RTC configuration with defaults
     MEMSET(&client_data->rtc_configuration, 0x00, SIZEOF(RtcConfiguration));

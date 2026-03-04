@@ -47,7 +47,6 @@ extern esp_err_t media_stream_i2c_init_safe(void);
 #define USERPTR_ALIGNMENT   64
 #define USERPTR_HEAP_CAPS   (MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)
 
-#define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_PORT       (1)
 #define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN    (GPIO_NUM_8)
 #define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN    (GPIO_NUM_7)
 #define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ       (400000)
@@ -122,9 +121,8 @@ static esp_err_t init_camera(v4l2_src_t *v4l2)
 {
     int fd;
     struct v4l2_capability capability;
-    const int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    fd = open(CAM_DEV_PATH, O_RDONLY);
+    fd = open(CAM_DEV_PATH, O_RDWR);
     if (fd < 0) {
         ESP_LOGE(TAG, "Failed to open camera device %s, errno: %d", CAM_DEV_PATH, errno);
         return ESP_FAIL;
@@ -158,7 +156,7 @@ static esp_err_t init_camera(v4l2_src_t *v4l2)
     struct v4l2_format format;
 
     memset(&format, 0, sizeof(struct v4l2_format));
-    format.type = type;
+    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(fd, VIDIOC_G_FMT, &format) != 0) {
         ESP_LOGE(TAG, "failed to get format");
         close(fd);  /* Close file descriptor on error */
@@ -252,6 +250,8 @@ static video_fb_t *video_fb_get_cb(void *cb_ctx)
             v4l2->fb_used[buf.index] = true;
             v4l2->fb.buf = v4l2->cap_buffer[buf.index];
             v4l2->fb.len = buf.bytesused;
+            v4l2->fb.width = g_current_resolution.width;
+            v4l2->fb.height = g_current_resolution.height;
             v4l2->v4l2_buf[buf.index] = buf;
 
             esp_cache_msync(v4l2->fb.buf, v4l2->fb.len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
@@ -619,11 +619,22 @@ static esp_err_t configure_camera_format(v4l2_src_t *v4l2, uint32_t pixelformat)
             g_current_resolution.width = format.fmt.pix.width;
             g_current_resolution.height = format.fmt.pix.height;
             g_current_resolution.fps = g_desired_resolution.fps ? g_desired_resolution.fps : 30;
+
+            /* Query actual frame rate from driver */
+            struct v4l2_streamparm streamparm = {0};
+            streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (ioctl(v4l2->cap_fd, VIDIOC_G_PARM, &streamparm) == 0) {
+                if (streamparm.parm.capture.timeperframe.numerator > 0) {
+                    g_current_resolution.fps = streamparm.parm.capture.timeperframe.denominator /
+                                               streamparm.parm.capture.timeperframe.numerator;
+                    ESP_LOGI(TAG, "Actual FPS from driver: %d", (int)g_current_resolution.fps);
+                }
+            }
+
             return ESP_OK;
-        } else {
-            ESP_LOGW(TAG, "Failed to set format %dx%d, errno: %d",
-                     (int)format.fmt.pix.width, (int)format.fmt.pix.height, errno);
         }
+        ESP_LOGW(TAG, "Failed to set format %dx%d, errno: %d",
+                 (int)format.fmt.pix.width, (int)format.fmt.pix.height, errno);
     }
 
     ESP_LOGE(TAG, "Failed to set any supported format. Check the camera resolution in menuconfig");
@@ -704,41 +715,43 @@ esp_err_t esp_video_if_init(void)
     return ESP_FAIL;
 #endif
 
-    /* Ensure I2C is initialized using the safe initialization function */
-    esp_err_t i2c_ret = media_stream_i2c_init_safe();
-    if (i2c_ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2C: %s", esp_err_to_name(i2c_ret));
-        return ESP_FAIL;
-    }
-
     v4l2_src_t *v4l2 = heap_caps_calloc(1, sizeof(v4l2_src_t), MALLOC_CAP_SPIRAM);
     if (!v4l2) {
         ESP_LOGE(TAG, "Failed to allocate memory for v4l2");
         return ESP_FAIL;
     }
 
-    esp_video_init_csi_config_t csi_config[] = {
-        {
-            .sccb_config = {
-                .init_sccb = false,
-                .i2c_handle = bsp_i2c_get_handle(),
-                .freq = CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ,
-            },
-            .reset_pin = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN,
-            .pwdn_pin  = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN,
-        },
-    };
-
     // Check if video device already exists (from previous initialization)
     // If it exists, esp_video_init() is not needed because ISP is already registered
     // NOTE: This handles the case where esp_video_if_deinit() was called but ISP device
     // registration persists (no esp_video_deinit() API exists)
-    int test_fd = open(CAM_DEV_PATH, O_RDONLY);
+    int test_fd = open(CAM_DEV_PATH, O_RDWR);
     if (test_fd >= 0) {
         close(test_fd);
-        ESP_LOGD(TAG, "Video device already exists (ISP already registered), skipping esp_video_init");
+        ESP_LOGI(TAG, "Video device already exists, using pre-initialized camera");
     } else {
-        // Device doesn't exist - need to initialize esp_video to register ISP device
+        // Device doesn't exist - need to initialize I2C and esp_video to register ISP device
+
+        /* Ensure I2C is initialized using the safe initialization function */
+        esp_err_t i2c_ret = media_stream_i2c_init_safe();
+        if (i2c_ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize I2C: %s", esp_err_to_name(i2c_ret));
+            free(v4l2);
+            return ESP_FAIL;
+        }
+
+        esp_video_init_csi_config_t csi_config[] = {
+            {
+                .sccb_config = {
+                    .init_sccb = false,
+                    .i2c_handle = bsp_i2c_get_handle(),
+                    .freq = CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ,
+                },
+                .reset_pin = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN,
+                .pwdn_pin  = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN,
+            },
+        };
+
         esp_video_init_config_t cam_config = {
             .csi      = csi_config,
         };
@@ -782,6 +795,15 @@ esp_err_t esp_video_if_get_resolution(video_resolution_t *resolution)
     }
 
     *resolution = g_current_resolution;
+    return ESP_OK;
+}
+
+esp_err_t esp_video_if_set_desired_resolution(const video_resolution_t *resolution)
+{
+    if (!resolution) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    g_desired_resolution = *resolution;
     return ESP_OK;
 }
 

@@ -100,6 +100,9 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     "-DESP_HOSTED_SLAVE_BUILD=1"
 )
 
+# Suppress format warnings from third-party esp_hosted code (e.g. missing args in ESP_LOGW)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=format -Wno-format)
+
 # Include protocomm private headers
 idf_component_get_property(protocomm_dir protocomm COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PRIVATE "${protocomm_dir}/src/common")

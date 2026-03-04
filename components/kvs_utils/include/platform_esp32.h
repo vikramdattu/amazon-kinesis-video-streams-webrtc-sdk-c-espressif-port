@@ -31,9 +31,11 @@
 // FIXME
 #define KVS_CA_CERT_PATH "/spiffs/certs/cacert.pem"
 
-// Define gai_strerror for lwip
+// Define gai_strerror for lwip (not needed on Linux which has native gai_strerror)
+#if __has_include(<lwip/opt.h>)
 #ifndef gai_strerror
 #define gai_strerror(x) lwip_strerr(x)
+#endif
 #endif
 
 // Platform specific defines
@@ -51,10 +53,10 @@ typedef unsigned char UINT8;
 typedef char INT8;
 typedef unsigned short UINT16;
 typedef short INT16;
-typedef unsigned long UINT32;
-typedef long INT32;
-typedef unsigned long long UINT64;
-typedef long long INT64;
+typedef uint32_t UINT32;
+typedef int32_t INT32;
+typedef uint64_t UINT64;
+typedef int64_t INT64;
 typedef double DOUBLE;
 typedef long double LDOUBLE;
 typedef float FLOAT;

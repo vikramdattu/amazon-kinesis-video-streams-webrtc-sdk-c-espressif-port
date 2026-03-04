@@ -15,7 +15,9 @@
 #include <inttypes.h>
 #include <ctype.h>
 #include <time.h>
+#if __has_include(<lwip/opt.h>)
 #include <lwip/opt.h>
+#endif
 
 /**
  * @brief Controls whether to use dynamic allocation for URLs and payloads

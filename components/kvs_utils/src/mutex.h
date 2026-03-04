@@ -37,19 +37,14 @@ extern CVAR globalConditionVariableCreate(void);
 // NOTE!!! Some of the libraries don't have a definition of PTHREAD_RECURSIVE_MUTEX_INITIALIZER
 #ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER
 
-#ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
-#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP                                                                                                       \
-    {                                                                                                                                                \
-        {                                                                                                                                            \
-            PTHREAD_MUTEX_RECURSIVE                                                                                                                  \
-        }                                                                                                                                            \
-    }
-#endif //!< #ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
-
+#ifdef PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+// Linux/glibc provides this initializer; use it
+#define GLOBAL_MUTEX_INIT_RECURSIVE PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
+#else
 // On ESP32, pthread_mutex_t is a scalar type (uint32_t), so we can't use brace initialization
 // ESP32 doesn't support static initialization of recursive mutexes - must use pthread_mutex_init
-// This macro should not be used as a static initializer on ESP32
 #define GLOBAL_MUTEX_INIT_RECURSIVE 0
+#endif
 #else //!< #ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER
 #define GLOBAL_MUTEX_INIT_RECURSIVE PTHREAD_RECURSIVE_MUTEX_INITIALIZER
 #endif //!< #ifndef PTHREAD_RECURSIVE_MUTEX_INITIALIZER

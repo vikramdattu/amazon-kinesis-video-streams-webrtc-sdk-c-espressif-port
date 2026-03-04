@@ -33,7 +33,9 @@ set(srcs
     "${SRC_DIR}/backoff.c"
 )
 
-if (CONFIG_USE_FLASH_IO)
+if(${IDF_TARGET} STREQUAL "linux")
+    list(APPEND srcs "${SRC_DIR}/fileio.c")
+elseif(CONFIG_USE_FLASH_IO)
     list(APPEND srcs "${SRC_DIR}/fileio_flash.c")
 else()
     list(APPEND srcs "${SRC_DIR}/fileio.c")
@@ -46,3 +48,11 @@ idf_component_register(
         "./src"
     REQUIRES esp_system heap pthread
 )
+
+# Suppress warnings-as-errors for platform compatibility issues on Linux host target
+if(${IDF_TARGET} STREQUAL "linux")
+    target_compile_options(${COMPONENT_LIB} PRIVATE
+        -Wno-error=implicit-function-declaration
+        -Wno-error=format
+    )
+endif()

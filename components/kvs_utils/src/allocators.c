@@ -144,13 +144,13 @@ void print_mem_stats(const char *tag)
     ESP_LOGI(log_tag, "The available total size of heap:%" PRIu32 , freeSize);
 
     printf("\tDescription\tInternal\tSPIRAM\n");
-    printf("Current Free Memory\t%d\t\t%d\n",
+    printf("Current Free Memory\t%zu\t\t%zu\n",
            heap_caps_get_free_size(MALLOC_CAP_8BIT) - heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
            heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    printf("Largest Free Block\t%d\t\t%d\n",
+    printf("Largest Free Block\t%zu\t\t%zu\n",
            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
            heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-    printf("Min. Ever Free Size\t%d\t\t%d\n",
+    printf("Min. Ever Free Size\t%zu\t\t%zu\n",
            heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL),
            heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
 }

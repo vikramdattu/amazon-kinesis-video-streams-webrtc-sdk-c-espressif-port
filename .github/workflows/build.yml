@@ -123,6 +123,35 @@ jobs:
             examples/${{ matrix.example }}/build/*.map
           retention-days: 30
 
+  test_linux:
+    name: "Unit Tests | Linux host"
+    runs-on: ubuntu-22.04
+    container: espressif/idf:release-v5.5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Apply SDK patches
+        shell: bash
+        run: |
+          git config --global --add safe.directory "*"
+          cd amazon-kinesis-video-streams-webrtc-sdk-c
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+          git am ../patches/*.patch
+
+      - name: Build and run tests on Linux target
+        shell: bash
+        run: |
+          . ${IDF_PATH}/export.sh
+          pip install pytest-embedded pytest-embedded-idf
+          cd test_app
+          cp sdkconfig.ci.linux sdkconfig.defaults
+          idf.py --preview set-target linux
+          idf.py build
+          pytest --embedded-services idf --target linux -k test_all -s
+
   build_docs:
     name: "Build Documentation"
     runs-on: ubuntu-22.04

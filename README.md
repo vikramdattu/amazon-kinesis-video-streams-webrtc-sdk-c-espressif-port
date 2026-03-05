@@ -1,5 +1,9 @@
 # ESP-IDF Port of Amazon Kinesis Video Streams WebRTC SDK
 
+<a href="https://espressif.github.io/esp-launchpad/?flashConfigURL=https://vikramdattu.github.io/amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port/launchpad.toml">
+    <img alt="Try it with ESP Launchpad" src="https://espressif.github.io/esp-launchpad/assets/try_with_launchpad.png" width="250" height="70">
+</a>
+
 This is a complete ESP-IDF port of the Amazon Kinesis Video Streams WebRTC SDK, enabling real-time audio/video streaming on ESP32 devices. The SDK supports multiple deployment modes and custom signaling protocols for maximum flexibility.
 
 ## Quick Start

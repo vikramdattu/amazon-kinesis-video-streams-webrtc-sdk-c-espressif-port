@@ -77,17 +77,17 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Waiting for WiFi connection");
+    ESP_LOGI(TAG, "Waiting for WiFi connection (use 'wifi-set <ssid> <pass>' to configure)");
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            WIFI_CONNECTED_BIT,
             pdFALSE,
             pdFALSE,
-            pdMS_TO_TICKS(20000));
+            pdMS_TO_TICKS(10000));
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to WiFi");
     } else {
-        ESP_LOGE(TAG, "Failed to connect to WiFi");
+        ESP_LOGW(TAG, "WiFi not connected yet, proceeding anyway (will retry with backoff)");
     }
 }
 
@@ -171,11 +171,11 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP32 WebRTC Camera Example");
 
     esp_cli_start();
+    wifi_register_cli();
+    webrtc_register_cli();
 
     // Initialize WiFi
     wifi_init_sta();
-    wifi_register_cli();
-    webrtc_register_cli();
 
     // Register the WebRTC event callback to receive events from the WebRTC SDK
     if (app_webrtc_register_event_callback(app_webrtc_event_handler, NULL) != 0) {
@@ -209,8 +209,8 @@ void app_main(void)
         ESP_LOGW(TAG, "Audio player not available - continuing without audio player");
     }
 
-    // Configure AppRTC signaling
-    apprtc_signaling_config_t apprtc_config = {
+    // Configure AppRTC signaling (must outlive app_main since app_webrtc stores the pointer)
+    static apprtc_signaling_config_t apprtc_config = {
         .serverUrl = NULL,  // Use default AppRTC server
         .roomId = NULL,     // Will be set based on role type
         .autoConnect = false,

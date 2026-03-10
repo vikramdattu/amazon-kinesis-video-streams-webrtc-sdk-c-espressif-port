@@ -121,6 +121,9 @@ typedef struct {
 
     // Progressive ICE server callback context
     kvs_ice_callback_ctx_t ice_callback_ctx;
+
+    // Last notified state to suppress duplicate state change callbacks
+    SIGNALING_CLIENT_STATE lastNotifiedState;
 } KvsSignalingClientData;
 
 /**
@@ -320,6 +323,14 @@ static STATUS kvsStateChangedCallback(UINT64 customData, SIGNALING_CLIENT_STATE 
     if (pClientData == NULL) {
         return STATUS_NULL_ARG;
     }
+
+    // Suppress duplicate state change notifications caused by state machine
+    // self-transitions (e.g., CONNECTED → CONNECTED during ICE refresh cycles)
+    if (state == pClientData->lastNotifiedState) {
+        ESP_LOGD(TAG, "Suppressing duplicate state change notification for state %" PRIu32, (uint32_t) state);
+        return STATUS_SUCCESS;
+    }
+    pClientData->lastNotifiedState = state;
 
     ESP_LOGI(TAG, "KVS signaling state changed to %" PRIu32, (uint32_t) state);
 

@@ -466,7 +466,6 @@ static void esp_websocket_event_handler(void *handler_args, esp_event_base_t bas
                     // Use the existing error callback mechanism to trigger reconnection
                     if (pSignalingClient->signalingClientCallbacks.errorReportFn != NULL) {
                         CHAR errorMsg[] = "WebSocket connection lost, triggering reconnection";
-                        ESP_LOGI(TAG, "DEBUG: Calling errorReportFn with STATUS_SIGNALING_RECONNECT_FAILED=0x%08x", STATUS_SIGNALING_RECONNECT_FAILED);
                         pSignalingClient->signalingClientCallbacks.errorReportFn(
                             pSignalingClient->signalingClientCallbacks.customData,
                             STATUS_SIGNALING_RECONNECT_FAILED,
@@ -552,13 +551,13 @@ static void esp_websocket_event_handler(void *handler_args, esp_event_base_t bas
 
             if (pSignalingClient != NULL) {
                 /*
-                 * Set connection failure immediately to unblock waiting threads.
-                 * This prevents the 10-second timeout delay when WebSocket connections fail.
-                 * By immediately setting the result and signaling
-                 * the condition variable, we enable immediate failure detection.
+                 * Unblock waiting threads immediately on error.
+                 * Do NOT clear pEspWrapper->isConnected here - the DISCONNECT event
+                 * (which always follows ERROR) needs that flag to detect that the
+                 * connection was active and properly trigger reconnection.
                  */
 
-                // Mark as not connected
+                // Mark signaling client as not connected
                 ATOMIC_STORE_BOOL(&pSignalingClient->connected, FALSE);
 
                 // Set error result to indicate connection failure
@@ -569,27 +568,11 @@ static void esp_websocket_event_handler(void *handler_args, esp_event_base_t bas
                 CVAR_BROADCAST(pSignalingClient->connectedCvar);
                 MUTEX_UNLOCK(pSignalingClient->connectedLock);
 
-                // Update wrapper state (lockless to avoid hanging in error handler)
-                if (pEspWrapper != NULL) {
-                    pEspWrapper->isConnected = FALSE;
-                    pEspWrapper->connectionAwaitingConfirmation = FALSE;
-                }
-
                 CVAR_BROADCAST(pSignalingClient->receiveCvar);
                 CVAR_BROADCAST(pSignalingClient->sendCvar);
 
-                // Use the error callback to trigger reconnection
-                if (pSignalingClient->signalingClientCallbacks.errorReportFn != NULL) {
-                    CHAR errorMsg[] = "WebSocket connection error, triggering reconnection";
-                    pSignalingClient->signalingClientCallbacks.errorReportFn(
-                        pSignalingClient->signalingClientCallbacks.customData,
-                        STATUS_SIGNALING_LWS_CALL_FAILED,
-                        errorMsg,
-                        (UINT32) STRLEN(errorMsg));
-                    ESP_LOGI(TAG, "Signaled for reconnection via error callback");
-                } else {
-                    ESP_LOGW(TAG, "No error callback registered, cannot signal for reconnection");
-                }
+                // Note: Reconnection is handled by the DISCONNECT event handler
+                // which fires after ERROR and checks pEspWrapper->isConnected
             } else {
                 ESP_LOGW(TAG, "pSignalingClient is NULL in WEBSOCKET_EVENT_ERROR!");
             }

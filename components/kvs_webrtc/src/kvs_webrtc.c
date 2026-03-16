@@ -745,11 +745,14 @@ static WEBRTC_STATUS kvs_pc_destroy_session(void *pSession)
         if (session->client->session_count == 0 && session->client->global_media_started) {
             ESP_LOGI(TAG, "Stopping global media threads for last session: %s", session->peer_id);
             STATUS media_status = kvs_media_stop_global_transmission(session->client);
+            // Always reset the flag when session count is 0, even if stop failed.
+            // Otherwise global_media_started stays TRUE and no future session will
+            // ever restart media threads.
+            session->client->global_media_started = FALSE;
             if (STATUS_SUCCEEDED(media_status)) {
-                session->client->global_media_started = FALSE;
                 ESP_LOGI(TAG, "Global media threads stopped successfully");
             } else {
-                ESP_LOGW(TAG, "Failed to stop global media threads: 0x%08" PRIx32, (UINT32) media_status);
+                ESP_LOGW(TAG, "Failed to stop global media threads: 0x%08" PRIx32 " (flag reset for recovery)", (UINT32) media_status);
             }
         }
 

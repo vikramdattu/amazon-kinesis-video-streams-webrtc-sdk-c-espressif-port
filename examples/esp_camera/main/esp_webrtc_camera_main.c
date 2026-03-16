@@ -6,19 +6,14 @@
 
 #include <string.h>
 #include <inttypes.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "esp_netif.h"
 
 #include "esp_cli.h"
 
 #include "app_webrtc.h"
+#include "app_wifi_prov.h"
 #include "media_stream.h"
 #include "apprtc_signaling.h"
 #include "wifi_cli.h"
@@ -28,68 +23,25 @@
 
 static const char *TAG = "esp_webrtc_camera";
 
-// WiFi event group
-static EventGroupHandle_t s_wifi_event_group;
-static char wifi_ip[72];
+#if CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE
+#include "esp_check.h"
+#include "esp_hosted_misc.h"
 
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
-
-static void event_handler(void* arg, esp_event_base_t event_base,
-                         int32_t event_id, void* event_data)
+static esp_err_t hosted_bt_prov_start(void *ctx)
 {
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-
-        memset(wifi_ip, 0, sizeof(wifi_ip)/sizeof(wifi_ip[0]));
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        memcpy(wifi_ip, &event->ip_info.ip, 4);
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
+    ESP_LOGI(TAG, "Initializing BT controller on coprocessor for provisioning");
+    ESP_RETURN_ON_ERROR(esp_hosted_bt_controller_init(), TAG, "BT controller init failed");
+    ESP_RETURN_ON_ERROR(esp_hosted_bt_controller_enable(), TAG, "BT controller enable failed");
+    return ESP_OK;
 }
 
-static void wifi_init_sta(void)
+static void hosted_bt_prov_end(void *ctx)
 {
-    s_wifi_event_group = xEventGroupCreate();
-
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = CONFIG_ESP_WIFI_SSID,
-            .password = CONFIG_ESP_WIFI_PASSWORD,
-        },
-    };
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "Waiting for WiFi connection (use 'wifi-set <ssid> <pass>' to configure)");
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT,
-            pdFALSE,
-            pdFALSE,
-            pdMS_TO_TICKS(10000));
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to WiFi");
-    } else {
-        ESP_LOGW(TAG, "WiFi not connected yet, proceeding anyway (will retry with backoff)");
-    }
+    ESP_LOGI(TAG, "Deinitializing BT controller on coprocessor");
+    esp_hosted_bt_controller_disable();
+    esp_hosted_bt_controller_deinit(true);
 }
+#endif
 
 /**
  * @brief Handle WebRTC events from the WebRTC SDK
@@ -174,8 +126,18 @@ void app_main(void)
     wifi_register_cli();
     webrtc_register_cli();
 
-    // Initialize WiFi
-    wifi_init_sta();
+    // Initialize WiFi (with BLE provisioning if enabled)
+    app_wifi_prov_config_t net_cfg = APP_NETWORK_CONFIG_DEFAULT();
+    net_cfg.wifi_connect_timeout_ms = 10000;
+#if CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE
+    net_cfg.prov_start_cb = hosted_bt_prov_start;
+    net_cfg.prov_end_cb = hosted_bt_prov_end;
+#endif
+    ret = app_wifi_prov_init(&net_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi provisioning init failed: %s", esp_err_to_name(ret));
+        return;
+    }
 
     // Register the WebRTC event callback to receive events from the WebRTC SDK
     if (app_webrtc_register_event_callback(app_webrtc_event_handler, NULL) != 0) {

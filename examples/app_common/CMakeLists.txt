@@ -1,6 +1,6 @@
-set(srcs "src/app_storage.c")
+set(srcs "src/app_storage.c" "src/app_wifi_prov.c")
 
-set(requires fatfs spiffs)
+set(requires fatfs spiffs esp_wifi esp_netif esp_event nvs_flash)
 
 idf_component_register(SRCS "${srcs}"
                        REQUIRES ${requires}

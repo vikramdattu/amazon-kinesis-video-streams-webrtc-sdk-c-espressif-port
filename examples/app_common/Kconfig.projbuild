@@ -24,6 +24,24 @@ menu "App Common Configs (Wi-Fi, SD-Card, Camera)"
         help
             Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
 
+    config APP_NETWORK_PROV_BLE
+        bool "Enable BLE provisioning for WiFi credentials"
+        default n
+        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        help
+            Enable BLE-based WiFi provisioning using the network_provisioning component.
+            When enabled, if the device has no stored WiFi credentials, it will start
+            a BLE provisioning service. Use the "ESP BLE Provisioning" phone app to
+            provide WiFi credentials.
+
+    config APP_NETWORK_PROV_POP
+        string "Proof of Possession (PoP) string"
+        default "abcd1234"
+        depends on APP_NETWORK_PROV_BLE
+        help
+            Proof of possession string used during BLE provisioning for security.
+            The same string must be entered in the provisioning phone app.
+
     config EXAMPLE_FORMAT_IF_MOUNT_FAILED
         bool "Format the card if mount failed"
         default n

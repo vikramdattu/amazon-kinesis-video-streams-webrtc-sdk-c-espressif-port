@@ -9,18 +9,15 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "esp_system.h"
-#include "esp_wifi.h"
-#include "esp_event.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "esp_netif.h"
 
 #include "esp_cli.h"
 #include "wifi_cli.h"
 
 #include "app_storage.h"
+#include "app_wifi_prov.h"
 #include "kvs_signaling.h"
 
 #if defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C5)
@@ -92,51 +89,14 @@ static void app_webrtc_event_handler(app_webrtc_event_data_t *event_data, void *
     }
 }
 
-// WiFi event group
-static EventGroupHandle_t s_wifi_event_group;
-static char wifi_ip[72];
-
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
-
-static void event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data)
-{
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-
-        memset(wifi_ip, 0, sizeof(wifi_ip)/sizeof(wifi_ip[0]));
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-        memcpy(wifi_ip, &event->ip_info.ip, 4);
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-    }
-}
-
-static bool wifi_is_provisioned(void)
-{
-    wifi_config_t wifi_cfg;
-    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK) {
-        ESP_LOGI(TAG, "Wifi get config failed");
-        return false;
-    }
-
-    if (strlen((const char *) wifi_cfg.sta.ssid)) {
-        ESP_LOGI(TAG, "Wifi provisioned");
-        return true;
-    }
-    ESP_LOGI(TAG, "Wifi not provisioned");
-
-    return false;
-}
+#if IS_VALID_SLAVE_CHIPSET
+#include "esp_wifi.h"
+#include "esp_netif.h"
 
 #ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
 static esp_netif_t *sta_netif = NULL;
 
-static esp_netif_t* create_slave_sta_netif(void)
+static esp_netif_t *create_slave_sta_netif(void)
 {
     /* Create "almost" default station, but with un-flagged DHCP client */
     /* Use static to ensure the config persists after function returns */
@@ -157,6 +117,19 @@ static esp_netif_t* create_slave_sta_netif(void)
     return netif_sta;
 }
 #endif
+
+static esp_err_t signaling_pre_wifi_init(void *ctx)
+{
+#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
+    /* Create and register the netif with "WIFI_STA_DEF" key */
+    sta_netif = create_slave_sta_netif();
+#endif
+    /* esp_netif_init and netif creation must be done before network_coprocessor_init */
+    esp_hosted_coprocessor_init();
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    return ESP_OK;
+}
+#endif /* IS_VALID_SLAVE_CHIPSET */
 
 void app_main(void)
 {
@@ -180,66 +153,20 @@ void app_main(void)
     query_resolution_command_register_cli();
     query_snapshot_command_register_cli();
 
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    ESP_ERROR_CHECK(esp_netif_init());
-
+    // Initialize WiFi (with BLE provisioning if enabled)
+    app_wifi_prov_config_t net_cfg = APP_NETWORK_CONFIG_DEFAULT();
 #if IS_VALID_SLAVE_CHIPSET
-    /* Initialize network co-processor */
-#ifdef CONFIG_ESP_HOSTED_NETWORK_SPLIT_ENABLED
-    /* Create and register the netif with "WIFI_STA_DEF" key */
-    sta_netif = create_slave_sta_netif();
+    net_cfg.pre_wifi_init_cb = signaling_pre_wifi_init;
+    net_cfg.skip_default_sta_netif = true;
 #endif
-    /* esp_netif_init and netif creation must be done before network_coprocessor_init */
-    esp_hosted_coprocessor_init();
-#endif
-
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &event_handler,
-                                                        NULL,
-                                                        NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &event_handler,
-                                                        NULL,
-                                                        NULL));
-
-    vTaskDelay(pdMS_TO_TICKS(5 * 1000));
-    // Initialize and start WiFi
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    wifi_config_t wifi_config = { /* config from sdkconfig if not provisioned */
-        .sta = {
-            .ssid = CONFIG_ESP_WIFI_SSID,
-            .password = CONFIG_ESP_WIFI_PASSWORD,
-        },
-    };
-
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    if (!wifi_is_provisioned()) {
-        ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ret = app_wifi_prov_init(&net_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi provisioning init failed: %s", esp_err_to_name(ret));
+        return;
     }
-    ESP_ERROR_CHECK(esp_wifi_start());
 
     // Initialize storage
     app_storage_init();
-
-    ESP_LOGI(TAG, "Waiting for WiFi connection");
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-            pdFALSE,
-            pdFALSE,
-            pdMS_TO_TICKS(20000));
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to WiFi");
-    } else {
-        ESP_LOGE(TAG, "Failed to connect to WiFi");
-    }
 
     // Perform the time sync
     esp_webrtc_time_sntp_time_sync_and_wait();

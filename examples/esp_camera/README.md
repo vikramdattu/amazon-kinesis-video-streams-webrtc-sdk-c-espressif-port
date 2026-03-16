@@ -50,13 +50,19 @@ idf.py set-target esp32s3 # For ESP32-S3-EYE (recommended)
 ```
 
 ### Step 2: Configure Wi-Fi & AppRTC Settings
+
+#### Wi-Fi Provisioning (Default for ESP32-S3)
+
+BLE provisioning is enabled by default on ESP32-S3. On first boot, the device advertises as a BLE device (`PROV_XXXXXX`). Use the **ESP BLE Provisioning** phone app ([Android](https://play.google.com/store/apps/details?id=com.espressif.provble) / [iOS](https://apps.apple.com/app/esp-ble-provisioning/id1473590141)) to provide WiFi credentials. See [app_common README](../app_common/README.md#wifi-provisioning) for details.
+
+You can also use the `wifi-set <ssid> <password>` CLI command at runtime to change credentials (use `wifi-set "" ""` to clear and re-trigger provisioning).
+
+Alternatively, configure Wi-Fi credentials via menuconfig:
 ```bash
 idf.py menuconfig
 ```
 
-**Navigate to: Example Configuration Options**
-
-#### Wi-Fi Settings (Required)
+**Navigate to: App Common Configs**
 ```
 ESP_WIFI_SSID = "YourWiFiNetwork"
 ESP_WIFI_PASSWORD = "YourPassword"

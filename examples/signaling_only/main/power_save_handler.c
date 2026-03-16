@@ -280,7 +280,10 @@ static void host_power_save_on_prepare_cb(void)
     * - Stop non-essential tasks
     * - etc.
     */
-    ESP_ERROR_CHECK(configure_wifi_power_save());
+    esp_err_t err = configure_wifi_power_save();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "configure_wifi_power_save failed: %s", esp_err_to_name(err));
+    }
 
 #if SUSPEND_NON_CRITICAL_TASKS_WHILE_LIGHT_SLEEPING
     // Get wifi task handle by name and suspend it

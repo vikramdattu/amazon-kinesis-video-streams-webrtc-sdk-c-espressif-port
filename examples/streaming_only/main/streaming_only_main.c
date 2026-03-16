@@ -54,8 +54,7 @@ static int custom_vprintf(const char* fmt, va_list args)
 extern esp_err_t esp_hosted_wait_for_slave(void);
 
 #define HOST_USES_STATIC_NETIF (0)
-esp_netif_t *sta_netif;
-
+static esp_netif_t *sta_netif;
 
 static const char *TAG = "streaming_only";
 
@@ -212,9 +211,14 @@ static void wifi_init_sta(void)
 	ESP_ERROR_CHECK(esp_hosted_connect_to_slave());
 
 #if HOST_USES_STATIC_NETIF
-    create_slave_sta_netif_with_static_ip();
+    sta_netif = create_slave_sta_netif_with_static_ip();
 #else
-    esp_netif_create_default_wifi_sta();
+    sta_netif = esp_netif_create_default_wifi_sta();
+    if (sta_netif == NULL) {
+        ESP_LOGE(TAG, "Failed to create default WiFi STA netif");
+        return;
+    }
+    ESP_LOGI(TAG, "Created default WiFi STA netif: %p", sta_netif);
 #endif
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -223,8 +227,8 @@ static void wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
     ESP_ERROR_CHECK(esp_wifi_start());
-    // vTaskDelay(pdMS_TO_TICKS(1000));
-    // esp_wifi_connect();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_wifi_connect();
     // ESP_ERROR_CHECK(esp_hosted_wait_for_slave());
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
@@ -395,6 +399,9 @@ void app_main(void)
 
     /* Register deep sleep command */
     power_save_cli_register();
+
+    esp_hosted_init();
+    esp_hosted_connect_to_slave();
 
     // Initialize WiFi
     wifi_init_sta();

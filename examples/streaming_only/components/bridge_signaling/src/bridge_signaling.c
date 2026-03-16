@@ -449,7 +449,7 @@ static WEBRTC_STATUS bridgeSetCallbacks(void *pSignalingClient,
     BridgeSignalingClientData* client_data = (BridgeSignalingClientData*)pSignalingClient;
 
     // Set the callbacks
-    client_data->on_msg_received = on_msg_received;
+    client_data->on_msg_received = on_msg_received; // send to SDK
     client_data->on_signaling_state_changed = on_signaling_state_changed;
     client_data->on_error = on_error;
     client_data->user_data = customData;
@@ -635,9 +635,9 @@ webrtc_signaling_client_if_t* getBridgeSignalingClientInterface(void)
         .init = bridgeInit,
         .connect = bridgeConnect,
         .disconnect = bridgeDisconnect,
-        .send_message = bridgeSendMessage,
+        .send_message = bridgeSendMessage, // To Matter Signaling
         .free = bridgeFree,
-        .set_callbacks = bridgeSetCallbacks,
+        .set_callbacks = bridgeSetCallbacks, // Ask SDK to set callbacks
         .set_role_type = bridgeSetRoleType,
         .get_ice_servers = bridgeGetIceServers,
         .get_ice_server_by_idx = NULL, // Bridge doesn't support index-based (uses RPC instead)

@@ -1041,7 +1041,19 @@ STATUS kvsSignalingQueryServerGetByIdx(PVOID pSignalingClient, int index, bool u
                     ESP_LOGE(TAG, "Failed to queue background ICE refresh: %d", (int) result);
                 }
             } else if (checkStatus == WEBRTC_STATUS_SUCCESS) {
-                ESP_LOGI(TAG, "ICE configuration is up to date");
+                ESP_LOGI(TAG, "ICE configuration is up to date - applying cached servers");
+                // ICE configs are still valid (not expired). Notify the callback so cached
+                // TURN servers are applied to new peer connections immediately.
+                if (pClientData->ice_callback_ctx.on_ice_servers_updated != NULL) {
+                    UINT32 iceConfigCount = 0;
+                    STATUS iceCountStatus = signalingClientGetIceConfigInfoCount(
+                        pClientData->signalingClientHandle, &iceConfigCount);
+                    if (STATUS_SUCCEEDED(iceCountStatus) && iceConfigCount > 0) {
+                        ESP_LOGI(TAG, "Applying %" PRIu32 " cached ICE servers to new peer connection", iceConfigCount);
+                        pClientData->ice_callback_ctx.on_ice_servers_updated(
+                            pClientData->ice_callback_ctx.customData, iceConfigCount);
+                    }
+                }
             } else {
                 ESP_LOGW(TAG, "ICE refresh check failed, proceeding anyway");
             }

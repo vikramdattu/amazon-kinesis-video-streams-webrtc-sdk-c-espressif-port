@@ -870,8 +870,13 @@ STATUS sessionCleanupWait(PSampleConfiguration pSampleConfiguration, bool isSign
                 DLOGI("Reconnecting signaling client (attempt %d, delay: %llu seconds)",
                       retryCount + 1, retryDelay / HUNDREDS_OF_NANOS_IN_A_SECOND);
 
-                // Disconnect and reconnect
-                CHK_STATUS(gWebRtcAppConfig.signaling_client_if->disconnect(gSignalingClientData));
+                // Disconnect and reconnect (don't abort loop on disconnect failure —
+                // the connection may already be broken, which is why we're reconnecting)
+                retStatus = gWebRtcAppConfig.signaling_client_if->disconnect(gSignalingClientData);
+                if (STATUS_FAILED(retStatus)) {
+                    DLOGW("Signaling disconnect failed: 0x%08x (continuing with reconnect)", retStatus);
+                    retStatus = STATUS_SUCCESS;
+                }
 
                 // Mark connection as starting
                 connectionInProgress = TRUE;
@@ -941,8 +946,8 @@ STATUS sessionCleanupWait(PSampleConfiguration pSampleConfiguration, bool isSign
         }
 
         if (!isSignalingOnly) {
-            // Check if any lingering pending message queues
-            CHK_STATUS(removeExpiredMessageQueues(pSampleConfiguration->pPendingSignalingMessageForRemoteClient));
+            // Check if any lingering pending message queues (don't abort loop on failure)
+            CHK_LOG_ERR(removeExpiredMessageQueues(pSampleConfiguration->pPendingSignalingMessageForRemoteClient));
         }
         // periodically wake up and clean up terminated streaming session
         CVAR_WAIT(pSampleConfiguration->cvar, pSampleConfiguration->sampleConfigurationObjLock, SAMPLE_SESSION_CLEANUP_WAIT_PERIOD);

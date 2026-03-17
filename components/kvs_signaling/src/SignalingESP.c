@@ -1192,6 +1192,7 @@ STATUS describeChannel(PSignalingClient pSignalingClient, UINT64 time)
 
     THREAD_SLEEP_UNTIL(time);
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1257,6 +1258,7 @@ STATUS createChannel(PSignalingClient pSignalingClient, UINT64 time)
     THREAD_SLEEP_UNTIL(time);
 
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1302,6 +1304,7 @@ STATUS getChannelEndpoint(PSignalingClient pSignalingClient, UINT64 time)
     THREAD_SLEEP_UNTIL(time);
 
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1411,6 +1414,7 @@ STATUS getIceConfig(PSignalingClient pSignalingClient, UINT64 time)
     THREAD_SLEEP_UNTIL(time);
 
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1453,6 +1457,7 @@ STATUS deleteChannel(PSignalingClient pSignalingClient, UINT64 time)
     THREAD_SLEEP_UNTIL(time);
 
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1496,6 +1501,7 @@ STATUS connectSignalingChannel(PSignalingClient pSignalingClient, UINT64 time)
     THREAD_SLEEP_UNTIL(time);
 
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1543,6 +1549,7 @@ STATUS joinStorageSession(PSignalingClient pSignalingClient, UINT64 time)
 
     CHK(pSignalingClient->mediaStorageConfig.storageStatus == TRUE, STATUS_SIGNALING_MEDIA_STORAGE_DISABLED);
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
@@ -1588,6 +1595,7 @@ STATUS describeMediaStorageConf(PSignalingClient pSignalingClient, UINT64 time)
 
     THREAD_SLEEP_UNTIL(time);
     // Check for the stale credentials
+    CHK(pSignalingClient->pAwsCredentials != NULL, STATUS_NULL_ARG);
     CHECK_SIGNALING_CREDENTIALS_EXPIRATION(pSignalingClient);
 
     ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);

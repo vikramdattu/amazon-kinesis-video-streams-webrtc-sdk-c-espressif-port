@@ -127,6 +127,35 @@ typedef struct {
 } KvsSignalingClientData;
 
 /**
+ * @brief Work queue task for applying cached ICE servers asynchronously.
+ *
+ * When ICE config is "up to date" (not expired), we still need to notify
+ * the callback so cached TURN servers are applied to new peer connections.
+ * This must be async because the callback chain (on_ice_servers_updated →
+ * app_webrtc_update_ice_servers → get_ice_servers) can synchronously drive
+ * the signaling state machine, causing a 22s+ block on HTTP calls.
+ */
+static void kvs_apply_cached_ice_task(void *arg)
+{
+    if (arg == NULL) {
+        return;
+    }
+
+    KvsSignalingClientData *pClientData = (KvsSignalingClientData *)arg;
+
+    if (pClientData->ice_callback_ctx.on_ice_servers_updated != NULL) {
+        UINT32 iceConfigCount = 0;
+        STATUS iceCountStatus = signalingClientGetIceConfigInfoCount(
+            pClientData->signalingClientHandle, &iceConfigCount);
+        if (STATUS_SUCCEEDED(iceCountStatus) && iceConfigCount > 0) {
+            ESP_LOGI(TAG, "Applying %" PRIu32 " cached ICE servers to peer connection (async)", iceConfigCount);
+            pClientData->ice_callback_ctx.on_ice_servers_updated(
+                pClientData->ice_callback_ctx.customData, iceConfigCount);
+        }
+    }
+}
+
+/**
  * @brief Work queue task for refreshing ICE configuration in background
  */
 static void kvs_refresh_ice_task(void *arg)
@@ -1041,18 +1070,12 @@ STATUS kvsSignalingQueryServerGetByIdx(PVOID pSignalingClient, int index, bool u
                     ESP_LOGE(TAG, "Failed to queue background ICE refresh: %d", (int) result);
                 }
             } else if (checkStatus == WEBRTC_STATUS_SUCCESS) {
-                ESP_LOGI(TAG, "ICE configuration is up to date - applying cached servers");
-                // ICE configs are still valid (not expired). Notify the callback so cached
-                // TURN servers are applied to new peer connections immediately.
-                if (pClientData->ice_callback_ctx.on_ice_servers_updated != NULL) {
-                    UINT32 iceConfigCount = 0;
-                    STATUS iceCountStatus = signalingClientGetIceConfigInfoCount(
-                        pClientData->signalingClientHandle, &iceConfigCount);
-                    if (STATUS_SUCCEEDED(iceCountStatus) && iceConfigCount > 0) {
-                        ESP_LOGI(TAG, "Applying %" PRIu32 " cached ICE servers to new peer connection", iceConfigCount);
-                        pClientData->ice_callback_ctx.on_ice_servers_updated(
-                            pClientData->ice_callback_ctx.customData, iceConfigCount);
-                    }
+                ESP_LOGI(TAG, "ICE configuration is up to date - scheduling async apply");
+                // ICE configs are still valid (not expired). Dispatch to work queue so the
+                // callback chain doesn't block the current call (offer processing path).
+                esp_err_t result = esp_work_queue_add_task(&kvs_apply_cached_ice_task, (void*)pClientData);
+                if (result != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to queue cached ICE apply task: %d", (int)result);
                 }
             } else {
                 ESP_LOGW(TAG, "ICE refresh check failed, proceeding anyway");

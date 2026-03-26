@@ -90,6 +90,10 @@ if(CONFIG_ESP_HOSTED_COPROCESSOR_EXAMPLE_HTTP_CLIENT)
     list(APPEND app_srcs "${slave_main_path}/example_http_client.c")
 endif()
 
+if(CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT)
+    list(APPEND app_srcs "${slave_main_path}/slave_wifi_enterprise.c")
+endif()
+
 # Private requirements
 set(priv_requires
     esp_wifi

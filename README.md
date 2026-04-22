@@ -2,7 +2,26 @@
 
 [![Build Examples & Docs](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port/actions/workflows/build.yml) [<img alt="Try it with ESP Launchpad" src="https://espressif.github.io/esp-launchpad/assets/try_with_launchpad.png" width="160" height="40">](https://espressif.github.io/esp-launchpad/?flashConfigURL=https://awslabs.github.io/amazon-kinesis-video-streams-webrtc-sdk-c-espressif-port/launchpad.toml)
 
-This is a complete ESP-IDF port of the Amazon Kinesis Video Streams WebRTC SDK, enabling real-time audio/video streaming on ESP32 devices. The SDK supports multiple deployment modes and custom signaling protocols for maximum flexibility.
+This is a complete ESP-IDF port of the [**Amazon Kinesis Video Streams WebRTC SDK C**](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c) (referred to as *the upstream SDK* below), enabling real-time audio/video streaming on ESP32 devices. The SDK supports multiple deployment modes and custom signaling protocols for maximum flexibility.
+
+The upstream SDK is included here as a git submodule at
+[`amazon-kinesis-video-streams-webrtc-sdk-c/`](amazon-kinesis-video-streams-webrtc-sdk-c/),
+and a small set of platform patches is applied on top to make it work cleanly
+in the ESP-IDF / FreeRTOS / lwIP environment. This repository adds:
+
+- ESP-IDF component glue (`components/`), Kconfig options, and `idf_component.yml` manifests.
+- ESP-targeted examples under `examples/` (single-device, split-mode, signaling-only, …).
+- A small set of [patches against the upstream SDK](patches/README.md) — each tagged either
+  *aligned with an upstream PR* (drops once the PR lands) or *ESP-IDF-specific*
+  (stays long-term). See [`patches/README.md`](patches/README.md) for the full
+  ledger.
+
+This repository **replaces** the `esp_port/` subdirectory that previously lived
+on the upstream SDK's `beta-reference-esp-port` branch (see Migration section
+below).
+
+Licensing: the upstream SDK is Apache-2.0; the additions in this repository
+are also Apache-2.0 (see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)).
 
 ## Quick Start
 
@@ -123,13 +142,20 @@ git submodule update --init
 
 ### Apply SDK patches
 
-The main WebRTC SDK submodule requires platform-specific patches for ESP-IDF compatibility. Apply them after cloning:
+The main WebRTC SDK submodule requires a small set of platform patches for
+ESP-IDF compatibility. Apply them after cloning:
 
 ```bash
 cd amazon-kinesis-video-streams-webrtc-sdk-c
 git am ../patches/*.patch
 cd ..
 ```
+
+The complete patch ledger — what each patch does and (where applicable) which
+upstream pull request will let us drop it — lives in
+[`patches/README.md`](patches/README.md). Patches are kept minimal and
+explicitly tagged as *aligned with upstream* or *ESP-IDF-specific* so reviewers
+can see exactly what diverges from `awslabs/amazon-kinesis-video-streams-webrtc-sdk-c`.
 
 ### Install the ESP-IDF
 

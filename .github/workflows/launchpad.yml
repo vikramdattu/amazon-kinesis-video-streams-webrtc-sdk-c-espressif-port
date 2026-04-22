@@ -2,7 +2,7 @@ name: Deploy ESP Launchpad
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/migration_from_beta_and_additional_setup]
   workflow_dispatch:
 
 permissions:

@@ -767,6 +767,7 @@ esp_err_t bridge_cmd_send_event(uint32_t cmd_id,
  */
 static void bridge_cmd_receive_cb(uint32_t msg_id, const uint8_t *data, size_t data_len, void *local_context)
 {
+    (void)local_context;
     if (msg_id != BRIDGE_CMD_MSG_ID) {
         ESP_LOGW(TAG, "Unexpected msg_id: 0x%" PRIx32, msg_id);
         return;

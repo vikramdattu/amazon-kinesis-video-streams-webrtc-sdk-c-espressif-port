@@ -122,6 +122,7 @@ static void webrtc_bridge_on_hosted_message(const uint8_t *data, size_t len)
 
 static void webrtc_bridge_receive_callback(uint32_t msg_id, const uint8_t *data, size_t data_len, void *local_context)
 {
+    (void)local_context;
     if (msg_id != WEBRTC_MSG_ID) {
         ESP_LOGW(TAG, "Unexpected msg_id: 0x%" PRIx32, msg_id);
         return;

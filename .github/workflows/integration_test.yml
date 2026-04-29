@@ -135,14 +135,7 @@ jobs:
           cd amazon-kinesis-video-streams-webrtc-sdk-c
           git config user.email "ci@example.com"
           git config user.name "CI"
-          # Patches may already be on submodule HEAD — `git am` aborts
-          # on already-applied; re-check before failing.
-          if git am ../../patches/*.patch 2>/dev/null; then
-              echo "Patches applied"
-          else
-              git am --abort 2>/dev/null || true
-              echo "Patches already on submodule HEAD — continuing"
-          fi
+          git am ../patches/*.patch
 
       - name: Build webrtc_classic for esp32s3
         env:

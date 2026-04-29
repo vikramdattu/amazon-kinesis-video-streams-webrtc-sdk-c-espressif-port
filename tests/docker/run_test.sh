@@ -70,5 +70,33 @@ docker compose "${PROFILE_ARGS[@]}" up --abort-on-container-exit "${SERVICES[@]}
 echo ">>> Tearing down..."
 docker compose "${PROFILE_ARGS[@]}" down --remove-orphans >/dev/null 2>&1 || true
 
+# Best-effort channel cleanup so CI runs (which use a unique
+# `espressif-port-ci-{run_id}` per run) don't pile up orphan channels.
+# Set KEEP_CHANNEL=1 in .env to disable (e.g. for local iteration on a
+# fixed channel name).
+if [ "${KEEP_CHANNEL:-0}" != "1" ]; then
+    if command -v aws >/dev/null 2>&1; then
+        echo ">>> Deleting KVS channel '$KVS_CHANNEL_NAME'..."
+        ARN=$(aws kinesisvideo describe-signaling-channel \
+                --channel-name "$KVS_CHANNEL_NAME" \
+                --region "$AWS_DEFAULT_REGION" \
+                --query 'ChannelInfo.ChannelARN' --output text 2>/dev/null) || ARN=""
+        if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
+            VERSION=$(aws kinesisvideo describe-signaling-channel \
+                --channel-name "$KVS_CHANNEL_NAME" \
+                --region "$AWS_DEFAULT_REGION" \
+                --query 'ChannelInfo.Version' --output text 2>/dev/null) || VERSION=""
+            aws kinesisvideo delete-signaling-channel \
+                --channel-arn "$ARN" \
+                ${VERSION:+--current-version "$VERSION"} \
+                --region "$AWS_DEFAULT_REGION" >/dev/null 2>&1 \
+                && echo "    deleted." \
+                || echo "    delete failed (may already be gone)."
+        fi
+    else
+        echo ">>> aws CLI not installed — skipping channel cleanup. Install awscli to enable."
+    fi
+fi
+
 echo ">>> Verifying logs..."
 MODE="$MODE" ./verify.sh

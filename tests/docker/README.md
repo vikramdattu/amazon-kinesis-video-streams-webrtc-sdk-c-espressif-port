@@ -34,6 +34,12 @@ The first C-image build pulls the upstream KVS deps (websockets,
 openssl, srtp, log4cplus) and takes ~10 minutes. The Python image
 builds in ~1 minute. Subsequent builds reuse the cached layer.
 
+By default, the script deletes the KVS channel after the test exits so
+CI runs don't leak channels into your AWS account. Set `KEEP_CHANNEL=1`
+in `.env` to keep it around (handy when iterating locally on a fixed
+channel name). Cleanup uses the `aws` CLI; if it isn't installed the
+step is a no-op with a warning.
+
 Outputs land in `out/`:
 - `master.log` — C master log
 - `viewer.log` — C viewer log (default mode)

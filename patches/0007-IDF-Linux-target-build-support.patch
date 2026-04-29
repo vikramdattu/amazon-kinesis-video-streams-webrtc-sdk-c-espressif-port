@@ -1,0 +1,82 @@
+diff --git a/src/source/Ice/Network.c b/src/source/Ice/Network.c
+index 4fbcb6a8f1..d4cf2e3897 100644
+--- a/src/source/Ice/Network.c
++++ b/src/source/Ice/Network.c
+@@ -4,7 +4,17 @@
+ #define LOG_CLASS "Network"
+ #include "../Include_i.h"
+ 
+-#if defined(CONFIG_IDF_CMAKE)
++/* The IDF Linux target sets `CONFIG_IDF_CMAKE` like every other
++ * IDF build, but is otherwise a host POSIX environment without
++ * esp_netif / esp_wifi / lwip. Use a single helper macro to gate
++ * ESP-only code paths without re-spelling the condition. */
++#if defined(CONFIG_IDF_CMAKE) && !defined(CONFIG_IDF_TARGET_LINUX)
++#define KVS_NETWORK_USE_ESP_IDF 1
++#else
++#define KVS_NETWORK_USE_ESP_IDF 0
++#endif
++
++#if KVS_NETWORK_USE_ESP_IDF
+ #include <esp_netif.h>
+ #include <esp_wifi.h>
+ 
+@@ -121,11 +131,11 @@ STATUS getLocalhostIpAddresses(PKvsIpAddress destIpList, PUINT32 pDestIpListLen,
+     DWORD retWinStatus, sizeAAPointer;
+     PIP_ADAPTER_ADDRESSES adapterAddresses, aa = NULL;
+     PIP_ADAPTER_UNICAST_ADDRESS ua;
+-#elif !defined(CONFIG_IDF_CMAKE)
++#elif !defined(CONFIG_IDF_CMAKE) || defined(CONFIG_IDF_TARGET_LINUX)
+     struct ifaddrs *ifaddr = NULL, *ifa = NULL;
+ #endif
+ 
+-#if !defined(CONFIG_IDF_CMAKE)
++#if !defined(CONFIG_IDF_CMAKE) || defined(CONFIG_IDF_TARGET_LINUX)
+     struct sockaddr_in* pIpv4Addr = NULL;
+     struct sockaddr_in6* pIpv6Addr = NULL;
+ #endif
+@@ -192,7 +202,7 @@ STATUS getLocalhostIpAddresses(PKvsIpAddress destIpList, PUINT32 pDestIpListLen,
+             }
+         }
+     }
+-#elif defined(CONFIG_IDF_CMAKE)
++#elif defined(CONFIG_IDF_CMAKE) && !defined(CONFIG_IDF_TARGET_LINUX)
+     ipCount = getEspIdfLocalIpAddresses(destIpList, destIpListLen, filter, customData);
+ #else
+     CHK(getifaddrs(&ifaddr) != -1, STATUS_GET_LOCAL_IP_ADDRESSES_FAILED);
+@@ -248,7 +258,7 @@ CleanUp:
+         SAFE_MEMFREE(adapterAddresses);
+     }
+ #else
+-#if !defined(CONFIG_IDF_CMAKE)
++#if !defined(CONFIG_IDF_CMAKE) || defined(CONFIG_IDF_TARGET_LINUX)
+     if (ifaddr != NULL) {
+         freeifaddrs(ifaddr);
+     }
+@@ -301,11 +311,11 @@ STATUS createSocket(KVS_IP_FAMILY_TYPE familyType, KVS_SOCKET_PROTOCOL protocol,
+     }
+ #endif /* NO_SIGNAL_SOCK_OPT */
+ 
+-#if defined(CONFIG_IDF_CMAKE)
++#if KVS_NETWORK_USE_ESP_IDF
+     // Handle socket buffer sizing for ESP-IDF platforms
+     CHK_STATUS(setEspSocketBufferSize(sockfd, sendBufSize));
+ #else
+-    // Non-ESP platforms - set send buffer size as normal
++    // Non-ESP platforms (incl. IDF Linux target) - set send buffer size as normal
+     if (sendBufSize > 0 && setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, &sendBufSize, SIZEOF(sendBufSize)) < 0) {
+         DLOGW("setsockopt() SO_SNDBUF failed with errno %s", getErrorString(getErrorCode()));
+         CHK(FALSE, STATUS_SOCKET_SET_SEND_BUFFER_SIZE_FAILED);
+diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
+index 36f914d2eb..e5cd56797b 100644
+--- a/src/source/PeerConnection/SessionDescription.c
++++ b/src/source/PeerConnection/SessionDescription.c
+@@ -1297,7 +1297,7 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+     CHAR firstCodec[MAX_PAYLOAD_TYPE_LENGTH];
+     BOOL supportCodec, foundMediaSectionWithCodec;
+     BOOL containsPayloadType = FALSE, containsRtpMap = FALSE, inSeenTransceivers = FALSE;
+-    PHashTable pSeenTransceivers;
++    PHashTable pSeenTransceivers = NULL;
+     RTC_CODEC rtcCodec;
+     MEDIA_STREAM_TRACK_KIND streamKind;
+     PKvsRtpTransceiver pKvsRtpFakeTransceiver = NULL, pKvsRtpTransceiver = NULL;

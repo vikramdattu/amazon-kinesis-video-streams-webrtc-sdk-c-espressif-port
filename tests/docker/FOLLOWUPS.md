@@ -97,34 +97,85 @@ Our local workaround: `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512` in `sdkconfig.de
 
 ## 6. linux_test: srtp_init() returns non-zero on first run
 
-**Status:** linux_test build is working end-to-end on macOS host (and
-should work on Linux CI runner). Binary launches, signaling config
-loads, `app_webrtc_init` succeeds, `WebRTC initialized` callback
-fires. Then `app_webrtc_run` → `kvs_webrtc_init` → `srtp_init()`
-returns a non-`srtp_err_status_ok` value, raising
-`STATUS_SRTP_INIT_FAILED (0x5b000005)` from
-`PeerConnection.c:1833`.
+**Status:** **resolved.** Root cause was `components/libsrtp2/port/config.h`
+hardcoding `SIZEOF_UNSIGNED_LONG=4` (correct for 32-bit ESP targets,
+wrong on x86_64/arm64 host where `unsigned long` is 8 bytes). Cipher
+self-tests in `srtp_crypto_kernel_init()` therefore returned
+`srtp_err_status_alloc_fail` / `_algo_fail` and `srtp_init()` returned
+non-OK. Fixed by switching to the compiler-provided `__SIZEOF_LONG__`
+builtin so the value is target-aware (expands to 4 on xtensa lx6/lx7
++ rv32, 8 on the host).
 
-`srtp_init()` calls `srtp_crypto_kernel_init()` in
-`crypto/kernel/crypto_kernel.c:72`. Likely candidates:
+## 7a. linux_test: lws was linking against system mbedtls
 
-- libsrtp's MbedTLS / OpenSSL crypto backend not initialised. We
-  build with mbedtls; the auto-init path may need
-  `srtp_install_log_handler` or a specific
-  `srtp_init_*` flag on Linux.
-- Entropy source (`/dev/urandom`) not opened on first call.
-- Cipher self-tests failing — `cipher_type_self_test` is run inside
-  kernel init.
+**Status:** **resolved.** Upstream lws's `tls/mbedtls/CMakeLists.txt`
+falls into `find_library(MBEDTLS_LIBRARY mbedtls)` whenever
+`LWS_MBEDTLS_LIBRARIES` and `LWS_MBEDTLS_INCLUDE_DIRS` are unset. On
+macOS that found Homebrew's `/opt/homebrew/lib/libmbedtls.dylib` (3.6.4);
+on a Debian CI host it would find `libmbedtls.so` from the apt package.
+The dylib was propagated via lws's PUBLIC link interface and ended up
+ahead of IDF's `libmbedcrypto.a` etc. in the link line, so symbol
+resolution won from the system mbedtls — which has a different config
+(no `MBEDTLS_X509_CRT_WRITE_C` among others). At runtime
+`createRtcCertificate()` failed with `0x59000001`
+(`STATUS_CERTIFICATE_GENERATION_FAILED`) even though IDF's static
+archives were present in the same link command.
 
-Repro: `./build/linux_test.elf` from `examples/linux_test/` with
-`KVS_FRAMES_DIR=…/samples` and AWS env vars set.
+Fixed by pre-pinning `LWS_MBEDTLS_LIBRARIES` / `LWS_MBEDTLS_INCLUDE_DIRS`
+to the IDF mbedtls component in `components/libwebsockets/CMakeLists.txt`
+before `add_subdirectory(libwebsockets)` is called.
 
-Next steps: enable libsrtp debug logging via
-`srtp_install_log_handler`, re-run, identify which sub-init returned
-the error code, then fix the underlying call site (probably a flag
-in our `components/libsrtp2/CMakeLists.txt` for the Linux target).
+## 7b. linux_test: master crashes in `kvs_pc_send_message` while sending SDP_ANSWER
 
-## 7. KVS C SDK `Include.h` documents `0x5a00002c` as `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED`
+**Status:** open. Linux-target only.
+
+End-to-end loop now runs as far as: master is connected to KVS WSS
+signaling, receives an `SDP_OFFER` from a Python aiortc viewer, parses
+ICE config, creates a peer connection, sets up media tracks, starts
+the global media sender threads. Then while building / sending the
+`SDP_ANSWER`, the master segfaults inside `kvs_pc_send_message`
+(stack unwound on macOS host):
+
+```
+0  segfault_handler
+1  _sigtramp
+2  __llvm_gcov_ctr.239
+3  kvs_pc_send_message + 1088
+4  signalingMessageReceived + 2972
+5  signalingMessageReceivedWrapper + 288
+6  kvsMessageReceivedCallback + 492
+7  receiveLwsMessageWrapper + 328
+```
+
+Likely causes (need to confirm):
+
+- aiortc's offer carries multiple DTLS fingerprints (sha-256 + sha-384
+  + sha-512). The KVS C SDK historically only reads the sha-256 line;
+  a mis-bounded copy of the longer sha-512 fingerprint into a fixed
+  buffer is a candidate.
+- Linux-target memory layout: stack is host-glibc managed, no
+  freertos task stack. Buffer overflows mask differently than on real
+  ESP targets.
+
+**Investigation steps:**
+
+- Run with AddressSanitizer (rebuild with `-fsanitize=address`) and
+  capture the deref'd address.
+- Symbolicate `kvs_pc_send_message + 1088` against the KVS SDK source.
+- Compare against ESP target run logs of the same offer to confirm
+  Linux-only.
+
+## 7c. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
+
+**Status:** trivial; ergonomic. The default path `samples/h264SampleFrames`
+is relative to cwd. Running `./build/linux_test.elf` from
+`examples/linux_test/` therefore can't find the upstream KVS sample
+frames at `${KVS_SDK_PATH}/samples/h264SampleFrames`. Worked-around by
+exporting `KVS_FRAMES_DIR=…/samples` before running. Either change the
+default to `${KVS_SDK_PATH}/samples` (resolved at build time) or document
+it more loudly in `examples/linux_test/README.md`.
+
+## 8. KVS C SDK `Include.h` documents `0x5a00002c` as `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED`
 
 **Status:** documentation/quality-of-life. Not blocking.
 

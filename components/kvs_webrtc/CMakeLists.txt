@@ -81,11 +81,18 @@ else()
     message(STATUS "Using direct mbedTLS for KVS TLS sessions")
 endif()
 
-set(requires "mbedtls" "lwip" "esp_timer" "nvs_flash" "freertos" "esp_system" "heap" "driver" "spi_flash" "esp_http_client" "app_webrtc" "kvs_utils" "libsrtp2" "esp_usrsctp")
+# Base set of REQUIRES that exist on every supported target (real ESP +
+# IDF Linux target). ESP-only ones are appended below.
+set(register_requires
+    "mbedtls" "lwip" "esp_timer" "nvs_flash" "freertos" "esp_system" "heap" "esp_http_client"
+)
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND register_requires "esp_wifi" "driver" "spi_flash")
+endif()
 
 # Add ESP-TLS dependency if using ESP-TLS implementation
 if(CONFIG_USE_ESP_TLS_FOR_KVS)
-    list(APPEND requires esp-tls)
+    list(APPEND register_requires "esp-tls")
 endif()
 
 idf_component_register(
@@ -97,17 +104,7 @@ idf_component_register(
 
     PRIV_INCLUDE_DIRS "${KVS_WEBRTC_ROOT}/src/source"
 
-    REQUIRES "mbedtls"
-             "lwip"
-             "esp_timer"
-             "esp_wifi"
-             "nvs_flash"
-             "freertos"
-             "esp_system"
-             "heap"
-             "driver"
-             "spi_flash"
-             "esp_http_client"
+    REQUIRES "${register_requires}"
 )
 
 # option(ENABLE_KVS_THREADPOOL "Enable support for KVS thread pool in signaling" OFF)

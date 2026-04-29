@@ -1,13 +1,16 @@
 
+set(lws_requires mbedtls freertos esp_timer)
+# `driver` doesn't exist on the IDF Linux target; libwebsockets only
+# pulls it in via deprecated esp_spi_flash.h.
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND lws_requires driver)
+endif()
+
 # Register as ESP-IDF component
 idf_component_register(
     INCLUDE_DIRS
         "libwebsockets/include"
-    REQUIRES
-        mbedtls
-        freertos
-        esp_timer
-        driver
+    REQUIRES "${lws_requires}"
     )
 
 # Add libwebsockets as a subdirectory with custom options

@@ -4,10 +4,6 @@ dependencies:
   idf:
     version: ">=4.4.0"
 
-  media_stream:
-    path: ../media_stream
-    version: '*'
-
   kvs_utils:
     path: ../kvs_utils
     version: '*'

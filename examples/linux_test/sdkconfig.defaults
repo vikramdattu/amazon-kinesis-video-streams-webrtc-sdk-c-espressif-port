@@ -1,5 +1,11 @@
-# Linux-target integration test defaults.
-# The Linux IDF target deliberately keeps the surface area minimal; almost
-# all ESP-IDF Kconfig options are absent. Project-specific knobs go here.
+# Linux-target defaults.
+# The Linux IDF target deliberately keeps the surface area minimal; most
+# ESP-IDF Kconfig options simply don't exist here. Only the project's
+# own knobs land in this file.
 
 CONFIG_IDF_TARGET="linux"
+
+# Use the upstream libwebsockets-based signaling path on Linux. The
+# ESP-websocket-client variant is built around lwip + ESP-specific
+# socket APIs and isn't portable to the host stack.
+CONFIG_USE_ESP_WEBSOCKET_CLIENT=n

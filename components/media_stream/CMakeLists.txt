@@ -1,3 +1,12 @@
+if(IDF_TARGET STREQUAL "linux")
+    # Headers-only on Linux — every src file under src/ depends on
+    # ESP-only peripherals (camera ISP, hw H.264, I2S codec). Consumers
+    # that genuinely need capture/player interfaces (kvs_media.c) accept
+    # NULL pointers; the API types alone are enough to compile.
+    idf_component_register(INCLUDE_DIRS "include")
+    return()
+endif()
+
 if (ENABLE_SIGNALLING_ONLY)
     set(srcs )
 else()

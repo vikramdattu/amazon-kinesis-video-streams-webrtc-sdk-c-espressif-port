@@ -15,8 +15,6 @@
 #include "filelogger.h"
 #include "fileio.h"
 
-#include "media_stream.h"
-
 #include "sdkconfig.h"
 #include "esp_log.h"
 

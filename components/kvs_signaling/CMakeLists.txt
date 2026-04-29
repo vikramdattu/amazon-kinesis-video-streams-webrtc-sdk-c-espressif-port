@@ -42,8 +42,12 @@ set(component_requires
 
 set(component_priv_requires
     "esp_netif"
-    "esp_wifi"
 )
+# esp_wifi is ESP-only; on Linux we use the host's networking stack
+# and have no provisioning to drive.
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND component_priv_requires "esp_wifi")
+endif()
 
 idf_component_register(
     SRCS

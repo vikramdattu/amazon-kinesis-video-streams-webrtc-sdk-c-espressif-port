@@ -3,76 +3,170 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Linux-target build canary for the espressif-port KVS WebRTC SDK.
+ * Linux-target equivalent of examples/webrtc_classic. Same SDK
+ * components (app_webrtc + kvs_signaling + kvs_webrtc + esp_webrtc_utils)
+ * with the ESP-only bits skipped:
+ *   - no NVS init: not needed when creds come from env vars
+ *   - no WiFi/BLE provisioning: Linux uses the host's networking stack
+ *   - no SNTP time sync: the host clock is already synced
+ *   - no media capture: video_capture/audio_capture left NULL so the
+ *     kvs_media path runs in signaling+peer-connection-only mode
  *
- * Today (Phase 1) this exercises only the components in the SDK that already
- * have IDF_TARGET=linux build paths — currently just esp_webrtc_utils. The
- * goal is to validate the Linux build pipeline (component-manager + libsrtp2
- * registry component + esp_usrsctp registry component eventually flowing
- * through here) before Phase 1b expands to the full WebRTC stack once
- * app_webrtc / kvs_webrtc / kvs_signaling grow Linux-target conditionals.
- *
- * For the real end-to-end media test (master + viewer over KVS), see
- * tests/docker/.
+ * AWS credentials and channel name come from environment variables, NOT
+ * Kconfig (Linux-target builds don't have device-config flows). This is
+ * the same env that the docker-compose harness passes through for the
+ * upstream-master container.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 
-#include "esp_work_queue.h"
+#include "app_webrtc.h"
+#include "kvs_signaling.h"
+#include "kvs_peer_connection.h"
 #include "esp_log.h"
 
 static const char *TAG = "linux_test";
 
-static volatile int s_canary_done = 0;
+static volatile int s_should_exit = 0;
 
-static void canary_task(void *priv)
+static void on_signal(int sig)
 {
-    (void)priv;
-    ESP_LOGI(TAG, "esp_work_queue task ran on Linux target");
-    s_canary_done = 1;
+    (void) sig;
+    s_should_exit = 1;
+}
+
+static const char *getenv_or_die(const char *name)
+{
+    const char *val = getenv(name);
+    if (!val || !*val) {
+        fprintf(stderr, "linux_test: required env var %s not set\n", name);
+        exit(2);
+    }
+    return val;
+}
+
+static void event_handler(app_webrtc_event_data_t *event_data, void *user_ctx)
+{
+    (void) user_ctx;
+    if (!event_data) {
+        return;
+    }
+    switch (event_data->event_id) {
+        case APP_WEBRTC_EVENT_INITIALIZED:
+            ESP_LOGI(TAG, "[KVS Event] WebRTC initialized");
+            break;
+        case APP_WEBRTC_EVENT_SIGNALING_CONNECTING:
+            ESP_LOGI(TAG, "[KVS Event] Signaling connecting");
+            break;
+        case APP_WEBRTC_EVENT_SIGNALING_CONNECTED:
+            ESP_LOGI(TAG, "[KVS Event] Signaling connected");
+            break;
+        case APP_WEBRTC_EVENT_SIGNALING_DISCONNECTED:
+            ESP_LOGI(TAG, "[KVS Event] Signaling disconnected");
+            break;
+        case APP_WEBRTC_EVENT_PEER_CONNECTION_REQUESTED:
+            ESP_LOGI(TAG, "[KVS Event] Peer connection requested");
+            break;
+        case APP_WEBRTC_EVENT_PEER_CONNECTED:
+            ESP_LOGI(TAG, "[KVS Event] Peer connected: %s", event_data->peer_id);
+            break;
+        case APP_WEBRTC_EVENT_PEER_DISCONNECTED:
+            ESP_LOGI(TAG, "[KVS Event] Peer disconnected: %s", event_data->peer_id);
+            break;
+        case APP_WEBRTC_EVENT_RECEIVED_OFFER:
+            ESP_LOGI(TAG, "[KVS Event] Received offer");
+            break;
+        case APP_WEBRTC_EVENT_SENT_ANSWER:
+            ESP_LOGI(TAG, "[KVS Event] Sent answer");
+            break;
+        case APP_WEBRTC_EVENT_ERROR:
+        case APP_WEBRTC_EVENT_SIGNALING_ERROR:
+        case APP_WEBRTC_EVENT_PEER_CONNECTION_FAILED:
+            ESP_LOGE(TAG, "[KVS Event] Error %d: %d %s",
+                     (int) event_data->event_id,
+                     (int) event_data->status_code,
+                     event_data->message ? event_data->message : "");
+            break;
+        default:
+            ESP_LOGI(TAG, "[KVS Event] Other event %d", (int) event_data->event_id);
+            break;
+    }
 }
 
 void app_main(void)
 {
-    printf("linux_test: espressif-port KVS WebRTC SDK Linux-target canary\n");
-    printf("  AWS_DEFAULT_REGION = %s\n",
-           getenv("AWS_DEFAULT_REGION") ? getenv("AWS_DEFAULT_REGION") : "(unset)");
-    printf("  KVS_CHANNEL_NAME   = %s\n",
-           getenv("KVS_CHANNEL_NAME") ? getenv("KVS_CHANNEL_NAME") : "(unset)");
-    printf("  AWS_ACCESS_KEY_ID  = %s\n",
-           getenv("AWS_ACCESS_KEY_ID") ? "(set)" : "(unset)");
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
 
-    /* Exercise the Linux subset of esp_webrtc_utils — proves the SDK component
-     * graph builds and the work queue runs on a POSIX-FreeRTOS host. */
-    esp_err_t err = esp_work_queue_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_work_queue_init failed: %d", err);
-        return;
-    }
-    err = esp_work_queue_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_work_queue_start failed: %d", err);
-        return;
-    }
-    err = esp_work_queue_add_task(canary_task, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_work_queue_add_task failed: %d", err);
+    printf("linux_test: espressif-port KVS WebRTC SDK Linux-target master\n");
+
+    const char *channel = getenv_or_die("KVS_CHANNEL_NAME");
+    const char *region  = getenv("AWS_DEFAULT_REGION");
+    if (!region || !*region) region = "us-west-2";
+
+    const char *access_key   = getenv_or_die("AWS_ACCESS_KEY_ID");
+    const char *secret_key   = getenv_or_die("AWS_SECRET_ACCESS_KEY");
+    const char *session_tok  = getenv("AWS_SESSION_TOKEN");
+
+    ESP_LOGI(TAG, "channel=%s region=%s", channel, region);
+
+    if (app_webrtc_register_event_callback(event_handler, NULL) != 0) {
+        ESP_LOGE(TAG, "register_event_callback failed");
         return;
     }
 
-    /* Wait for the queued task to actually run before declaring success. */
-    for (int i = 0; i < 50 && !s_canary_done; ++i) {
-        usleep(20 * 1000);
+    static kvs_signaling_config_t sig = {0};
+    sig.pChannelName = (char *) channel;
+    sig.useIotCredentials = false;
+    sig.awsAccessKey = (char *) access_key;
+    sig.awsSecretKey = (char *) secret_key;
+    sig.awsSessionToken = session_tok ? (char *) session_tok : (char *) "";
+    sig.awsRegion = (char *) region;
+    /* No SPIFFS on Linux — let mbedtls fall back to its bundled CA list. */
+    sig.caCertPath = NULL;
+
+    app_webrtc_config_t cfg = APP_WEBRTC_CONFIG_DEFAULT();
+    cfg.signaling_client_if = kvs_signaling_client_if_get();
+    cfg.signaling_cfg = &sig;
+    cfg.peer_connection_if = kvs_peer_connection_if_get();
+    /* No camera / mic on Linux — leave capture interfaces NULL. The
+     * kvs_media paths skip media-feeding when these are NULL, so the
+     * peer connection completes signaling + DTLS / SRTP, exchanges no
+     * frames, and idles. Frame-feeding from disk is a follow-up. */
+    cfg.video_capture = NULL;
+    cfg.audio_capture = NULL;
+
+    ESP_LOGI(TAG, "Initializing WebRTC (master role, signaling-only on Linux)");
+    WEBRTC_STATUS rc = app_webrtc_init(&cfg);
+    if (rc != WEBRTC_STATUS_SUCCESS) {
+        ESP_LOGE(TAG, "app_webrtc_init failed: 0x%08x", (unsigned) rc);
+        return;
     }
-    if (!s_canary_done) {
-        ESP_LOGE(TAG, "canary_task never ran");
-        exit(1);
+
+    rc = app_webrtc_run();
+    if (rc != WEBRTC_STATUS_SUCCESS) {
+        ESP_LOGE(TAG, "app_webrtc_run failed: 0x%08x", (unsigned) rc);
+        app_webrtc_terminate();
+        return;
     }
-    ESP_LOGI(TAG, "canary OK");
-    /* Linux IDF target keeps FreeRTOS spinning otherwise — exit so the
-     * binary terminates cleanly under CI. */
+    ESP_LOGI(TAG, "linux_test: WebRTC running. Press Ctrl+C to exit.");
+
+    /* Run for TEST_DURATION_SEC (default 60s) or until SIGINT/SIGTERM. */
+    int duration = 60;
+    const char *dur_env = getenv("TEST_DURATION_SEC");
+    if (dur_env && *dur_env) {
+        duration = atoi(dur_env);
+    }
+    for (int i = 0; i < duration && !s_should_exit; ++i) {
+        sleep(1);
+    }
+
+    ESP_LOGI(TAG, "linux_test: shutting down");
+    app_webrtc_terminate();
+    /* Linux IDF target keeps FreeRTOS spinning otherwise. */
     exit(0);
 }

@@ -226,22 +226,11 @@ jobs:
       - name: Generate sdkconfig overlay with AWS creds
         if: steps.creds.outputs.skip != '1'
         env:
-          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
-        run: |
-          # The base overlay sdkconfig.defaults.qemu sets all the
-          # CONFIG_AWS_* vars to empty strings. This .local overlay
-          # comes last in the chain and overrides them with the
-          # actual secret values.
-          cat > examples/webrtc_classic/sdkconfig.defaults.qemu.local <<EOF
-          CONFIG_AWS_ACCESS_KEY_ID="${ACCESS_KEY}"
-          CONFIG_AWS_SECRET_ACCESS_KEY="${SECRET_KEY}"
-          CONFIG_AWS_SESSION_TOKEN="${SESSION_TOKEN}"
-          CONFIG_AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}"
-          CONFIG_AWS_KVS_CHANNEL_NAME="${KVS_CHANNEL_NAME}"
-          EOF
+        run: tests/docker/ci/gen_creds_overlay.sh examples/webrtc_classic/sdkconfig.defaults.qemu.local
 
       - name: Build webrtc_classic for esp32s3 with QEMU + creds overlays
         if: steps.creds.outputs.skip != '1'
@@ -263,83 +252,24 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
         run: |
-          # Build paths from $GITHUB_WORKSPACE inside the shell — the
-          # template `${{ github.workspace }}` expands to the host
-          # path on the runner, which doesn't exist inside this
-          # container. The runtime $GITHUB_WORKSPACE env var is
-          # auto-remapped to the container's mount.
+          # `-global driver=ssi_psram,property=size_mbytes,value=8`
+          # caps emulated PSRAM at 8 MB (matches real S3-WROOM-1U-N16R8).
+          # The qemu-xtensa esp_develop_9.2.2 build silently ignores
+          # this global today (tracked: gitlab idf/qemu MR !115); the
+          # firmware overlay disables PSRAM as a workaround.
           export OUT_PATH="$GITHUB_WORKSPACE/qemu_recording.mkv"
           export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
           cd examples/webrtc_classic
           . /opt/esp/idf/export.sh
-          mkdir -p "$(dirname "$OUT_PATH")"
-          # Start QEMU as background; serial → qemu_serial.log.
-          # `-global driver=ssi_psram,property=size_mbytes,value=8`
-          # caps emulated PSRAM at 8 MB (matches real S3-WROOM-1U-N16R8).
-          # Without this, the qemu ssi_psram device defaults to 32 MB
-          # which exceeds the S3 cache MMU's vaddr range — flash mmap
-          # then has no entries available and the partition table
-          # subsystem aborts on app_main entry.
-          ( idf.py qemu --qemu-extra-args="-no-reboot -global driver=ssi_psram,property=size_mbytes,value=8" \
-              > qemu_serial.log 2>&1 & echo $! > qemu.pid )
-          # Give the firmware time to boot, get IP, sync time, and
-          # reach the signaling-init retry loop.
-          sleep 25
-          echo "::group::Firmware boot snippet"
-          tail -40 qemu_serial.log
-          echo "::endgroup::"
-          # Run the Python viewer; it self-terminates after TEST_DURATION_SEC.
-          # `-u` for unbuffered output so tee/$LOG_PATH actually has
-          # content if the script crashes (otherwise the buffer is
-          # lost on abort). 2>&1 to capture stderr (tracebacks,
-          # logging) into the same log file.
-          python -u "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" 2>&1 | tee "$LOG_PATH" &
-          VIEWER_PID=$!
-          # Wait up to TEST_DURATION_SEC + grace.
-          wait $VIEWER_PID || true
-          # Kill QEMU.
-          if [ -f qemu.pid ]; then kill -TERM $(cat qemu.pid) 2>/dev/null || true; fi
-          pkill -TERM qemu-system-xtensa 2>/dev/null || true
-          sleep 2
-          pkill -KILL qemu-system-xtensa 2>/dev/null || true
+          "$GITHUB_WORKSPACE/tests/docker/ci/run_qemu_with_viewer.sh" \
+              "-global driver=ssi_psram,property=size_mbytes,value=8"
 
       - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
         if: steps.creds.outputs.skip != '1'
         shell: bash
-        run: |
-          MKV="${GITHUB_WORKSPACE}/qemu_recording.mkv"
-          if [ ! -s "$MKV" ]; then
-            echo "::error::qemu_recording.mkv missing or empty"
-            exit 1
-          fi
-          ffprobe -v error -show_streams -count_packets "$MKV" > ffprobe.txt
-          echo "--- ffprobe ---" ; cat ffprobe.txt ; echo "----------------"
+        run: tests/docker/ci/verify_recording.sh "$GITHUB_WORKSPACE/qemu_recording.mkv"
 
-          # Pull per-stream codec + packet count. The firmware sends
-          # H.264 video + OPUS audio (CONFIG_APP_VIDEO_USE_FILE_FRAMES=y
-          # loops samples/frame-*.h264 at 30 fps and matching Opus
-          # frames). We assert both streams reached the viewer.
-          VID_CODEC=$(awk -F= '/codec_type=video/{vid=1} vid && /codec_name=/{print $2; exit}' ffprobe.txt)
-          AUD_CODEC=$(awk -F= '/codec_type=audio/{aud=1} aud && /codec_name=/{print $2; exit}' ffprobe.txt)
-          VID_PACKETS=$(awk -F= '/codec_type=video/{vid=1} vid && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-          AUD_PACKETS=$(awk -F= '/codec_type=audio/{aud=1} aud && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-
-          echo "video codec=${VID_CODEC:-none} packets=${VID_PACKETS:-0}"
-          echo "audio codec=${AUD_CODEC:-none} packets=${AUD_PACKETS:-0}"
-
-          ok=1
-          [ "$VID_CODEC" = "h264" ] || { echo "::error::video codec is '${VID_CODEC:-none}', expected h264"; ok=0; }
-          [ "$AUD_CODEC" = "opus" ] || { echo "::error::audio codec is '${AUD_CODEC:-none}', expected opus"; ok=0; }
-
-          # Lower threshold (≥30 packets each) — accounts for slow
-          # ICE/DTLS handshake in CI. Real soak runs see hundreds.
-          [ "${VID_PACKETS:-0}" -ge 30 ] || { echo "::error::video packets ${VID_PACKETS:-0} < 30"; ok=0; }
-          [ "${AUD_PACKETS:-0}" -ge 30 ] || { echo "::error::audio packets ${AUD_PACKETS:-0} < 30"; ok=0; }
-
-          [ "$ok" = "1" ] || exit 1
-          echo "PASS — H.264 + OPUS round-trip verified end-to-end through QEMU."
-
-      - name: Delete KVS channel (inline boto3)
+      - name: Delete KVS channel
         if: always() && steps.creds.outputs.skip != '1'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -347,27 +277,10 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
         run: |
-          # awscli isn't in the espressif/idf image's apt sources, so
-          # we use boto3 (already pip-installed via python_viewer's
-          # requirements.txt) to clean up. Source IDF env so the
-          # right python (with boto3) is on $PATH.
+          # boto3 lives in the IDF python env (installed by python_viewer's
+          # requirements.txt); source IDF env so it's on PATH.
           . /opt/esp/idf/export.sh
-          python <<'PY'
-          import os, boto3
-          from botocore.exceptions import ClientError
-          ch = os.environ["KVS_CHANNEL_NAME"]
-          kvs = boto3.client("kinesisvideo", region_name=os.environ["AWS_DEFAULT_REGION"])
-          try:
-              info = kvs.describe_signaling_channel(ChannelName=ch)["ChannelInfo"]
-              kvs.delete_signaling_channel(ChannelARN=info["ChannelARN"],
-                                           CurrentVersion=info["Version"])
-              print(f"deleted {ch}")
-          except ClientError as e:
-              if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                  print(f"{ch} already gone")
-              else:
-                  print(f"delete error (non-fatal): {e}")
-          PY
+          python tests/docker/ci/kvs_delete_channel.py
 
       - name: Upload QEMU + viewer artifacts
         if: always()
@@ -445,18 +358,11 @@ jobs:
       - name: Generate sdkconfig overlay with AWS creds
         if: steps.creds.outputs.skip != '1'
         env:
-          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
-        run: |
-          cat > examples/webrtc_classic/sdkconfig.defaults.qemu.local <<EOF
-          CONFIG_AWS_ACCESS_KEY_ID="${ACCESS_KEY}"
-          CONFIG_AWS_SECRET_ACCESS_KEY="${SECRET_KEY}"
-          CONFIG_AWS_SESSION_TOKEN="${SESSION_TOKEN}"
-          CONFIG_AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}"
-          CONFIG_AWS_KVS_CHANNEL_NAME="${KVS_CHANNEL_NAME}"
-          EOF
+        run: tests/docker/ci/gen_creds_overlay.sh examples/webrtc_classic/sdkconfig.defaults.qemu.local
 
       - name: Build webrtc_classic for esp32 with QEMU + creds overlays
         if: steps.creds.outputs.skip != '1'
@@ -482,58 +388,21 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
         run: |
+          # No size_mbytes override here — esp32's machine default is
+          # already `-m 4M` and qemu's ssi_psram device defaults to 4
+          # MB, which matches what real ESP32-WROVER hardware reports.
           export OUT_PATH="$GITHUB_WORKSPACE/qemu_recording.mkv"
           export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
           cd examples/webrtc_classic
           . /opt/esp/idf/export.sh
-          mkdir -p "$(dirname "$OUT_PATH")"
-          # No size_mbytes override here — esp32's machine default is
-          # already `-m 4M` and qemu's ssi_psram device defaults to 4
-          # MB, which matches what real ESP32-WROVER hardware reports.
-          ( idf.py qemu --qemu-extra-args="-no-reboot" \
-              > qemu_serial.log 2>&1 & echo $! > qemu.pid )
-          sleep 25
-          echo "::group::Firmware boot snippet"
-          tail -40 qemu_serial.log
-          echo "::endgroup::"
-          python -u "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" 2>&1 | tee "$LOG_PATH" &
-          VIEWER_PID=$!
-          wait $VIEWER_PID || true
-          if [ -f qemu.pid ]; then kill -TERM $(cat qemu.pid) 2>/dev/null || true; fi
-          pkill -TERM qemu-system-xtensa 2>/dev/null || true
-          sleep 2
-          pkill -KILL qemu-system-xtensa 2>/dev/null || true
+          "$GITHUB_WORKSPACE/tests/docker/ci/run_qemu_with_viewer.sh"
 
       - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
         if: steps.creds.outputs.skip != '1'
         shell: bash
-        run: |
-          MKV="${GITHUB_WORKSPACE}/qemu_recording.mkv"
-          if [ ! -s "$MKV" ]; then
-            echo "::error::qemu_recording.mkv missing or empty"
-            exit 1
-          fi
-          ffprobe -v error -show_streams -count_packets "$MKV" > ffprobe.txt
-          echo "--- ffprobe ---" ; cat ffprobe.txt ; echo "----------------"
+        run: tests/docker/ci/verify_recording.sh "$GITHUB_WORKSPACE/qemu_recording.mkv"
 
-          VID_CODEC=$(awk -F= '/codec_type=video/{vid=1} vid && /codec_name=/{print $2; exit}' ffprobe.txt)
-          AUD_CODEC=$(awk -F= '/codec_type=audio/{aud=1} aud && /codec_name=/{print $2; exit}' ffprobe.txt)
-          VID_PACKETS=$(awk -F= '/codec_type=video/{vid=1} vid && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-          AUD_PACKETS=$(awk -F= '/codec_type=audio/{aud=1} aud && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-
-          echo "video codec=${VID_CODEC:-none} packets=${VID_PACKETS:-0}"
-          echo "audio codec=${AUD_CODEC:-none} packets=${AUD_PACKETS:-0}"
-
-          ok=1
-          [ "$VID_CODEC" = "h264" ] || { echo "::error::video codec is '${VID_CODEC:-none}', expected h264"; ok=0; }
-          [ "$AUD_CODEC" = "opus" ] || { echo "::error::audio codec is '${AUD_CODEC:-none}', expected opus"; ok=0; }
-          [ "${VID_PACKETS:-0}" -ge 30 ] || { echo "::error::video packets ${VID_PACKETS:-0} < 30"; ok=0; }
-          [ "${AUD_PACKETS:-0}" -ge 30 ] || { echo "::error::audio packets ${AUD_PACKETS:-0} < 30"; ok=0; }
-
-          [ "$ok" = "1" ] || exit 1
-          echo "PASS — H.264 + OPUS round-trip verified end-to-end through QEMU (esp32)."
-
-      - name: Delete KVS channel (inline boto3)
+      - name: Delete KVS channel
         if: always() && steps.creds.outputs.skip != '1'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -542,22 +411,7 @@ jobs:
         shell: bash
         run: |
           . /opt/esp/idf/export.sh
-          python <<'PY'
-          import os, boto3
-          from botocore.exceptions import ClientError
-          ch = os.environ["KVS_CHANNEL_NAME"]
-          kvs = boto3.client("kinesisvideo", region_name=os.environ["AWS_DEFAULT_REGION"])
-          try:
-              info = kvs.describe_signaling_channel(ChannelName=ch)["ChannelInfo"]
-              kvs.delete_signaling_channel(ChannelARN=info["ChannelARN"],
-                                           CurrentVersion=info["Version"])
-              print(f"deleted {ch}")
-          except ClientError as e:
-              if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                  print(f"{ch} already gone")
-              else:
-                  print(f"delete error (non-fatal): {e}")
-          PY
+          python tests/docker/ci/kvs_delete_channel.py
 
       - name: Upload QEMU + viewer artifacts
         if: always()
@@ -617,6 +471,10 @@ jobs:
         if: steps.creds.outputs.skip != '1'
         shell: bash
         run: |
+          # `pip` is only on PATH after the IDF env is sourced
+          # (espressif/idf base image puts it under
+          # /opt/esp/python_env/...). Same pattern as the QEMU jobs.
+          . /opt/esp/idf/export.sh
           apt-get update && apt-get install -y --no-install-recommends ffmpeg
           pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
 
@@ -644,52 +502,14 @@ jobs:
           export KVS_FRAMES_DIR="$GITHUB_WORKSPACE/amazon-kinesis-video-streams-webrtc-sdk-c/samples"
           cd examples/linux_test
           . /opt/esp/idf/export.sh
-          # Start the master in background. linux_test's app_main loops
-          # for TEST_DURATION_SEC then exit(0)s; we let the viewer race
-          # it via timeout.
-          ( ./build/linux_test.elf > linux_master.log 2>&1 & echo $! > master.pid )
-          # Give the master time to set up signaling, gather candidates.
-          sleep 15
-          echo "::group::Master boot snippet"
-          tail -40 linux_master.log
-          echo "::endgroup::"
-          python -u "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" 2>&1 | tee "$LOG_PATH" &
-          VIEWER_PID=$!
-          wait $VIEWER_PID || true
-          if [ -f master.pid ]; then kill -TERM $(cat master.pid) 2>/dev/null || true; fi
-          sleep 2
-          pkill -KILL -f linux_test.elf 2>/dev/null || true
+          "$GITHUB_WORKSPACE/tests/docker/ci/run_linux_with_viewer.sh"
 
       - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
         if: steps.creds.outputs.skip != '1'
         shell: bash
-        run: |
-          MKV="${GITHUB_WORKSPACE}/linux_recording.mkv"
-          if [ ! -s "$MKV" ]; then
-            echo "::error::linux_recording.mkv missing or empty"
-            exit 1
-          fi
-          ffprobe -v error -show_streams -count_packets "$MKV" > ffprobe.txt
-          echo "--- ffprobe ---" ; cat ffprobe.txt ; echo "----------------"
+        run: tests/docker/ci/verify_recording.sh "$GITHUB_WORKSPACE/linux_recording.mkv"
 
-          VID_CODEC=$(awk -F= '/codec_type=video/{vid=1} vid && /codec_name=/{print $2; exit}' ffprobe.txt)
-          AUD_CODEC=$(awk -F= '/codec_type=audio/{aud=1} aud && /codec_name=/{print $2; exit}' ffprobe.txt)
-          VID_PACKETS=$(awk -F= '/codec_type=video/{vid=1} vid && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-          AUD_PACKETS=$(awk -F= '/codec_type=audio/{aud=1} aud && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
-
-          echo "video codec=${VID_CODEC:-none} packets=${VID_PACKETS:-0}"
-          echo "audio codec=${AUD_CODEC:-none} packets=${AUD_PACKETS:-0}"
-
-          ok=1
-          [ "$VID_CODEC" = "h264" ] || { echo "::error::video codec is '${VID_CODEC:-none}', expected h264"; ok=0; }
-          [ "$AUD_CODEC" = "opus" ] || { echo "::error::audio codec is '${AUD_CODEC:-none}', expected opus"; ok=0; }
-          [ "${VID_PACKETS:-0}" -ge 30 ] || { echo "::error::video packets ${VID_PACKETS:-0} < 30"; ok=0; }
-          [ "${AUD_PACKETS:-0}" -ge 30 ] || { echo "::error::audio packets ${AUD_PACKETS:-0} < 30"; ok=0; }
-
-          [ "$ok" = "1" ] || exit 1
-          echo "PASS — H.264 + OPUS round-trip verified end-to-end (linux_test master)."
-
-      - name: Delete KVS channel (inline boto3)
+      - name: Delete KVS channel
         if: always() && steps.creds.outputs.skip != '1'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -698,22 +518,7 @@ jobs:
         shell: bash
         run: |
           . /opt/esp/idf/export.sh
-          python <<'PY'
-          import os, boto3
-          from botocore.exceptions import ClientError
-          ch = os.environ["KVS_CHANNEL_NAME"]
-          kvs = boto3.client("kinesisvideo", region_name=os.environ["AWS_DEFAULT_REGION"])
-          try:
-              info = kvs.describe_signaling_channel(ChannelName=ch)["ChannelInfo"]
-              kvs.delete_signaling_channel(ChannelARN=info["ChannelARN"],
-                                           CurrentVersion=info["Version"])
-              print(f"deleted {ch}")
-          except ClientError as e:
-              if e.response["Error"]["Code"] == "ResourceNotFoundException":
-                  print(f"{ch} already gone")
-              else:
-                  print(f"delete error (non-fatal): {e}")
-          PY
+          python tests/docker/ci/kvs_delete_channel.py
 
       - name: Upload artifacts
         if: always()

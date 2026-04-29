@@ -73,6 +73,37 @@ Wired up via `.github/workflows/integration_test.yml`. Repo secrets
 populate `.env` at job start. See that workflow for the canonical
 command sequence.
 
+### Switching from static AWS keys to OIDC (TODO)
+
+CI today passes `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN` as repo secrets. KVS rejects STUN binding requests
+from some IPs (e.g. GitHub-hosted runner Azure ranges) with
+`403 Forbidden IP` when authenticated this way; that's how the
+python_viewer hits `aioice.stun.TransactionFailed: 403 - Forbidden IP`.
+
+Both the **KVS WebRTC C SDK** and **Producer SDK CPP** upstream CIs use
+GitHub Actions OIDC to assume an IAM role instead — see e.g.
+[awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/.github/workflows/ci.yml](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/blob/develop/.github/workflows/ci.yml):
+
+```yaml
+- name: Configure AWS Credentials
+  uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+    aws-region: ${{ secrets.AWS_REGION }}
+```
+
+Required setup on the AWS side:
+- Create an IAM role with `kinesisvideo:*` (or scoped) permissions.
+- Trust policy allowing GitHub Actions OIDC for this repo + branch.
+- Store the role ARN in repo secret `AWS_ROLE_TO_ASSUME`, region in
+  `AWS_REGION`.
+
+Once configured, drop the static `AWS_*` env vars from
+`integration_test.yml` and replace with the snippet above. KVS allows
+role-assumed callers regardless of source IP, so the 403 path
+disappears.
+
 ## Limitations / future work
 
 - **ESP32-S3 in QEMU:** see `Dockerfile.s3-build` (Phase 2 tier 1) — build

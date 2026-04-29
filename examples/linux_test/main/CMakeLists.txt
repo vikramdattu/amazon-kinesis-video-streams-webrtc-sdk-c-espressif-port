@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 idf_component_register(
-    SRCS "main.c"
+    SRCS "main.c" "file_capture.c"
     INCLUDE_DIRS "."
-    REQUIRES app_webrtc kvs_signaling kvs_webrtc esp_event
+    REQUIRES app_webrtc kvs_signaling kvs_webrtc esp_event media_stream
 )

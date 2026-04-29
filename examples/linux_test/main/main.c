@@ -28,6 +28,7 @@
 #include "kvs_signaling.h"
 #include "kvs_peer_connection.h"
 #include "esp_log.h"
+#include "file_capture.h"
 
 static const char *TAG = "linux_test";
 
@@ -133,12 +134,20 @@ void app_main(void)
     cfg.signaling_client_if = kvs_signaling_client_if_get();
     cfg.signaling_cfg = &sig;
     cfg.peer_connection_if = kvs_peer_connection_if_get();
-    /* No camera / mic on Linux — leave capture interfaces NULL. The
-     * kvs_media paths skip media-feeding when these are NULL, so the
-     * peer connection completes signaling + DTLS / SRTP, exchanges no
-     * frames, and idles. Frame-feeding from disk is a follow-up. */
-    cfg.video_capture = NULL;
-    cfg.audio_capture = NULL;
+
+    /* File-backed capture: loops the same H.264 + Opus sample frames
+     * the upstream KVS C SDK ships under `samples/`. Set
+     * KVS_FRAMES_DIR=<path> to point at a checkout of those samples
+     * (default "samples", relative to cwd). With these wired up the
+     * peer connection actually pumps RTP after DTLS handshake,
+     * letting the docker viewer record an MKV that ffprobe can
+     * verify. */
+    const char *frames_dir = getenv("KVS_FRAMES_DIR");
+    if (frames_dir && *frames_dir) {
+        file_capture_set_frames_dir(frames_dir);
+    }
+    cfg.video_capture = file_capture_get_video_if();
+    cfg.audio_capture = file_capture_get_audio_if();
 
     ESP_LOGI(TAG, "Initializing WebRTC (master role, signaling-only on Linux)");
     WEBRTC_STATUS rc = app_webrtc_init(&cfg);

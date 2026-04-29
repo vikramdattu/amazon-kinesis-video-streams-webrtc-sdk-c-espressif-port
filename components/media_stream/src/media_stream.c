@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "media_stream.h"
+#include "flash_wrapper.h"
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "bsp/esp-bsp.h"
 #endif
@@ -1059,37 +1060,38 @@ esp_err_t media_stream_read_frame_from_disk(uint8_t *frame_data, uint32_t *size,
         return ESP_ERR_INVALID_ARG;
     }
 
-    FILE *fp = fopen(frame_path, "rb");
-    if (fp == NULL) {
-        ESP_LOGE(TAG, "Failed to open file: %s", frame_path);
+    /* Route through flash_wrapper instead of raw fopen/fread. The
+     * media-sender threads run with stacks in PSRAM (created via
+     * THREAD_CREATE_EX_EXT). Calling fopen/fread directly would land
+     * on esp_flash_read → spi_flash_disable_interrupts_caches_and_other_cpu,
+     * which asserts esp_task_stack_is_sane_cache_disabled() on a
+     * PSRAM stack on esp32. flash_wrapper_read dispatches to a
+     * dedicated internal-RAM task, so any caller is safe. */
+    size_t file_size = 0;
+    esp_err_t st = flash_wrapper_get_size(frame_path, &file_size);
+    if (st != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to stat file: %s (0x%x)", frame_path, st);
         return ESP_ERR_NOT_FOUND;
     }
-
-    // Get file size
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
 
     // If frame_data is NULL, just return the size
     if (frame_data == NULL) {
         *size = (uint32_t)file_size;
-        fclose(fp);
         return ESP_OK;
     }
 
     // Check if buffer is large enough
     if (*size < file_size) {
-        fclose(fp);
         *size = (uint32_t)file_size;
         return ESP_ERR_INVALID_SIZE;
     }
 
-    // Read the file
-    size_t bytes_read = fread(frame_data, 1, file_size, fp);
-    fclose(fp);
+    // Read the file via the dispatcher task
+    st = flash_wrapper_read(frame_path, frame_data, file_size, 0);
+    size_t bytes_read = (st == ESP_OK) ? file_size : 0;
 
     if (bytes_read != file_size) {
-        ESP_LOGE(TAG, "Failed to read file: %s", frame_path);
+        ESP_LOGE(TAG, "Failed to read file: %s (0x%x)", frame_path, st);
         return ESP_FAIL;
     }
 

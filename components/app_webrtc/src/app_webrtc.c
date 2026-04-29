@@ -1943,11 +1943,14 @@ WEBRTC_STATUS app_webrtc_run(void)
 
     /* Check if we need to allocate or reuse existing buffers */
     if (task_buffer == NULL) {
-        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        /* TCB must be in byte-accessible internal DRAM — esp32's
+         * xPortCheckValidTCBMem rejects 32-bit-only IRAM regions
+         * that MALLOC_CAP_INTERNAL alone can hand back. */
+        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
 
     if (task_stack == NULL) {
-        task_stack = heap_caps_calloc_prefer(1, WEBRTC_TASK_STACK_SIZE, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL);
+        task_stack = heap_caps_calloc_prefer(1, WEBRTC_TASK_STACK_SIZE, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
 
     if (!task_buffer || !task_stack) {

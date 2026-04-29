@@ -159,7 +159,16 @@ async def run() -> int:
 
         async def pump_signaling():
             async for raw in ws:
-                msg = json.loads(raw)
+                # KVS occasionally sends keepalive frames or non-JSON
+                # control frames; skip anything that doesn't parse as
+                # an object with a messageType.
+                try:
+                    msg = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    log.debug("Non-JSON ws frame, len=%d", len(raw) if raw else 0)
+                    continue
+                if not isinstance(msg, dict):
+                    continue
                 mtype = msg.get("messageType", "").upper()
                 payload_b64 = msg.get("messagePayload", "")
                 if not payload_b64:

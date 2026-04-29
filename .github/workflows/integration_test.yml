@@ -336,7 +336,9 @@ jobs:
         run: |
           # awscli isn't in the espressif/idf image's apt sources, so
           # we use boto3 (already pip-installed via python_viewer's
-          # requirements.txt) to clean up.
+          # requirements.txt) to clean up. Source IDF env so the
+          # right python (with boto3) is on $PATH.
+          . /opt/esp/idf/export.sh
           python <<'PY'
           import os, boto3
           from botocore.exceptions import ClientError

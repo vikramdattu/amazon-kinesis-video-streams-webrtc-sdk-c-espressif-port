@@ -81,6 +81,19 @@ if(IDF_TARGET STREQUAL "linux")
     # Force LWS to use mbedtls too so HMAC_CTX etc. resolve to mbedtls
     # types instead of trying to pull in OpenSSL headers.
     set(LWS_WITH_MBEDTLS ON CACHE BOOL "" FORCE)
+    # Skip the upstream lws test apps + minimal examples on the Linux
+    # IDF target — they fail to link against IDF's static archive set
+    # (need lws_open and other libc-platform-only symbols, plus pull
+    # in things like JSON policy parser that we don't need).
+    set(LWS_WITHOUT_TESTAPPS ON CACHE BOOL "" FORCE)
+    set(LWS_WITH_MINIMAL_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # On real ESP targets `LWS_WITH_FILE_OPS=OFF` (see below) trims
+    # binary size; lejp-conf and secure-streams policy parsing aren't
+    # used. On Linux those code paths still get compiled (because
+    # they're file-system-relevant on POSIX) and reference `lws_open`,
+    # which is itself only compiled under `LWS_WITH_FILE_OPS`. Turn
+    # file_ops back on for the Linux IDF target so the symbol resolves.
+    set(LWS_WITH_FILE_OPS ON CACHE INTERNAL "" FORCE)
 endif()
 
 # Add libwebsockets as a subdirectory

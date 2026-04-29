@@ -9,7 +9,7 @@
  * gets from `media_stream` on ESP targets, but uses plain libc
  * `fopen`/`fread` so it works on the IDF Linux target without
  * requiring the camera ISP / hw H.264 / SPIFFS dependencies that
- * tie `media_stream/src/*.c` to ESP hardware.
+ * tie media_stream/src/[*].c to ESP hardware.
  *
  * Frame layout on disk (matches the upstream KVS C SDK samples):
  *   FRAMES_DIR/h264SampleFrames/frame-NNNN.h264   (1500 frames, ~30 fps)

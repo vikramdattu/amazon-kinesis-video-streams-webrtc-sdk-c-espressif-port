@@ -98,6 +98,14 @@ static void event_handler(app_webrtc_event_data_t *event_data, void *user_ctx)
     }
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+void app_main(void);
+#ifdef __cplusplus
+}
+#endif
+
 void app_main(void)
 {
     signal(SIGINT, on_signal);

@@ -383,6 +383,17 @@ void app_main(void)
     app_webrtc_enable_media_reception(true);                         // Enable receiving media
     // app_webrtc_set_ice_config(false, false);                         // Disable trickle ICE and TURN
 
+#if CONFIG_APP_NETWORK_USE_OPENETH
+    /* Under QEMU OpenETH (slirp NAT), TURN allocation against KVS
+     * fails (STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED) and the
+     * non-trickle answer-send path waits for full ICE gathering to
+     * complete. Disable TURN so gathering completes with just host
+     * candidates → master sends the answer immediately and the
+     * Python viewer (running on the same host as QEMU) can use the
+     * srflx/host candidates that slirp does forward. */
+    app_webrtc_set_ice_config(true, false);
+#endif
+
     ESP_LOGI(TAG, "Running WebRTC application");
 
     // Run WebRTC application

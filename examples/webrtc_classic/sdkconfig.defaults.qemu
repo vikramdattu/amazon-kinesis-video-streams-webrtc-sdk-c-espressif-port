@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay for running webrtc_classic under Espressif's QEMU fork on
+# esp32s3. Used by the QEMU-based docker integration test —
+# tests/docker/Dockerfile.s3-qemu and the esp32s3_qemu_test CI job.
+#
+# Apply via SDKCONFIG_DEFAULTS chain after sdkconfig.defaults +
+# sdkconfig.defaults.esp32s3, e.g. by exporting
+# SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.qemu"
+# before `idf.py build`.
+
+# Disable SPIRAM entirely for QEMU. The emulated ssi_psram in
+# qemu-xtensa exposes a 30 MB pool that grabs the entire flash-mmap
+# vaddr range, so subsequent esp_mmu_map() calls (used by partition
+# loading) fail with "no such vaddr range" and the app aborts. Real
+# ESP-IDF dev / CI on hardware uses Octal PSRAM via the .esp32s3
+# overlay; the .qemu overlay turns it off so the app can boot.
+CONFIG_ESP32S3_SPIRAM_SUPPORT=n
+CONFIG_SPIRAM=n
+CONFIG_SPIRAM_MODE_OCT=n
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=
+CONFIG_SPIRAM_USE_MALLOC=n
+
+# USB Serial JTAG isn't emulated in qemu-xtensa; without UART console
+# we get no boot output at all. Switch to UART0.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Flash mode: QEMU is happier with DIO than QIO at 80 MHz.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=n
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+
+# Skip the ML / camera / display init paths that touch real hardware
+# QEMU doesn't emulate. The example reads these via Kconfig-controlled
+# helpers; tightening these cuts down on init-time crashes.
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y

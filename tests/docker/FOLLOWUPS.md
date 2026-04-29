@@ -18,9 +18,12 @@ In **non-trickle ICE mode**, `kvs_webrtc.c:1041` (handler `onIceCandidateHandler
 
 **Where to patch:** likely `kvs_webrtc.c` non-trickle answer-send path (line 1041), and/or the upstream `IceAgent` state machine in `amazon-kinesis-video-streams-webrtc-sdk-c/src/source/Ice/` so that gathering completion fires when *any* path settles, not only on full success.
 
-## 2. TURN GET_CREDENTIALS_FAILED root cause
+## 2. TURN GET_CREDENTIALS_FAILED — QEMU/slirp specific
 
-**Status:** investigation pending. Surfaces under QEMU + slirp; may also surface on flaky NATs in the real world.
+**Status:** environmental, not a TURN-itself or SDK bug. TURN works fine
+in production deployments (verified via the same KVS C SDK shipping in
+esp-rainmaker, and rmaker-cli's aiortc viewer talking to real devices).
+The failure is specific to our QEMU + slirp networking layer.
 **Athena:** task #13.
 
 `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED (0x5a00002c)` is **not** an auth-rejection error code. It is a **state-machine timeout** raised at `TurnConnectionStateMachine.c:280`:
@@ -45,6 +48,11 @@ In our QEMU run the master logs show 4 retries of `TURN Get Credentials` (312–
 - Run with `qemu-system-xtensa ... -nic user,model=open_eth,id=net0 -object filter-dump,id=f1,netdev=net0,file=/tmp/qemu.pcap` and inspect the pcap to confirm whether KVS responses arrive and which 5-tuple they target.
 - Bump `stateTimeoutTime` and see if the handshake just needs more time on slirp.
 - Try the same run with bridged networking (tap+veth) — if it works there, confirms slirp path.
+
+**Note**: `DEFAULT_TURN_GET_CREDENTIAL_TIMEOUT` and
+`DEFAULT_TURN_ALLOCATION_TIMEOUT` are both 5s in the upstream SDK
+(`TurnConnection.h`). On real networks that's plenty; under slirp the
+NAT response apparently doesn't make the round trip in time.
 
 ## 3. Actual RTP media flow over slirp
 

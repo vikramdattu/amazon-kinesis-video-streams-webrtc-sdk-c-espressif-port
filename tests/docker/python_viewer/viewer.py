@@ -38,6 +38,7 @@ from aiortc import (
     RTCIceCandidate,
     RTCIceServer,
     RTCPeerConnection,
+    RTCRtpCodecCapability,
     RTCSessionDescription,
 )
 from aiortc.contrib.media import MediaRecorder
@@ -120,8 +121,25 @@ async def run() -> int:
     recorder = MediaRecorder(OUT_PATH)
 
     # Receive-only H.264 + Opus, matching what the C master sends.
-    pc.addTransceiver("video", direction="recvonly")
-    pc.addTransceiver("audio", direction="recvonly")
+    # KVS master is configured for H264 video and OPUS audio only;
+    # if the offer advertises VP8/VP9/G.711 first, the master rejects
+    # the offer entirely (kvs_webrtc Failed to process offer 0xc).
+    # Pin codec preferences to the codecs we actually want.
+    video_caps = [
+        RTCRtpCodecCapability(mimeType="video/H264", clockRate=90000,
+                              parameters={
+                                  "level-asymmetry-allowed": "1",
+                                  "packetization-mode": "1",
+                                  "profile-level-id": "42e01f",
+                              }),
+    ]
+    audio_caps = [
+        RTCRtpCodecCapability(mimeType="audio/opus", clockRate=48000, channels=2),
+    ]
+    video_t = pc.addTransceiver("video", direction="recvonly")
+    video_t.setCodecPreferences(video_caps)
+    audio_t = pc.addTransceiver("audio", direction="recvonly")
+    audio_t.setCodecPreferences(audio_caps)
 
     track_count = 0
 

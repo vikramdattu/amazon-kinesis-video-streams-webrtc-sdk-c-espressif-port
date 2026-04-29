@@ -1,0 +1,5 @@
+# Linux-target integration test defaults.
+# The Linux IDF target deliberately keeps the surface area minimal; almost
+# all ESP-IDF Kconfig options are absent. Project-specific knobs go here.
+
+CONFIG_IDF_TARGET="linux"

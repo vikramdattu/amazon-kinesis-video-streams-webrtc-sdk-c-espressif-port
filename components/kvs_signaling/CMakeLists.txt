@@ -70,7 +70,8 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DESP_PLATFORM
     -DAWS_IOT_SDK
     -DKVS_PLAT_ESP
-    -DLWS_WITH_CUSTOM_HEADERS
+    # LWS_WITH_CUSTOM_HEADERS is already provided by libwebsockets'
+    # generated lws_config.h (it's `option(... ON)` upstream).
     -DENABLE_STREAMING
     -DKVS_USE_PLATFORM_TYPES
     -DKVS_PLAT_ESP_FREERTOS

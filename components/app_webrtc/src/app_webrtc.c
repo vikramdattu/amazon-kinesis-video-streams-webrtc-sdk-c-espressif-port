@@ -1088,15 +1088,17 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
     STATUS retStatus = STATUS_SUCCESS;
     PSampleConfiguration pSampleConfiguration = (PSampleConfiguration) HANDLE_TO_POINTER(customData);
 
-    CHK(pSampleConfiguration != NULL, STATUS_NULL_ARG);
-
-    // Normal processing (bridge mode is handled in wrapper, never reaches here)
+    /* Initialize all CleanUp-touched locals before the first CHK so the
+     * goto path doesn't read uninitialized memory. Apple Clang flagged
+     * this under -Wsometimes-uninitialized; GCC happens to suppress it. */
     BOOL peerConnectionFound = FALSE, locked = FALSE, freeStreamingSession = FALSE;
     UINT32 clientIdHash;
     UINT64 hashValue = 0;
     PPendingMessageQueue pPendingMessageQueue = NULL;
     PAppWebRTCSession pAppWebRTCSession = NULL;
     webrtc_message_t* pWebRtcMessageCopy = NULL;
+
+    CHK(pSampleConfiguration != NULL, STATUS_NULL_ARG);
 
     MUTEX_LOCK(pSampleConfiguration->sampleConfigurationObjLock);
     locked = TRUE;

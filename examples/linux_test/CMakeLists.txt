@@ -20,3 +20,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../app_common/set_kvs_sdk_path.cmake)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(linux_test)
+
+# ESP-IDF's Linux-target toolchain config injects `-Wno-error=maybe-uninitialized`
+# into every component's compile line. That's a GCC option name; Apple Clang
+# rejects it under -Werror via -Wunknown-warning-option, breaking the macOS
+# host build. CI on Ubuntu (GCC) accepts the original flag and never sees this.
+# Silencing the diagnostic is the smallest fix that keeps both compilers happy.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    idf_build_set_property(COMPILE_OPTIONS "-Wno-unknown-warning-option" APPEND)
+endif()

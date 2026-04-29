@@ -2,6 +2,7 @@
 #define CONFIG_H
 
 #include <stdint.h>
+#include <inttypes.h>  // For PRIx64 etc. (used in upstream debug_print calls)
 #include <stddef.h>  // For size_t definition
 
 /* Define if building for a CISC machine (e.g. Intel). */

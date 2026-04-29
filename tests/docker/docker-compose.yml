@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+# SPDX-License-Identifier: Apache-2.0
+#
+# Master + Viewer pair, both running the same image, connected through the
+# same KVS signaling channel. AWS credentials and channel name come from
+# `.env` (or compose-level env vars in CI).
+
+services:
+  master:
+    build:
+      # build context = espressif-port repo root, so the Dockerfile can
+      # COPY the amazon-kinesis-video-streams-webrtc-sdk-c/ submodule.
+      context: ../..
+      dockerfile: tests/docker/Dockerfile
+    image: kvs-integration:latest
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?must be set in .env}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?must be set in .env}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_KVS_LOG_LEVEL: ${AWS_KVS_LOG_LEVEL:-3}
+      KVS_CHANNEL_NAME: ${KVS_CHANNEL_NAME:?must be set in .env}
+      TEST_DURATION_SEC: ${TEST_DURATION_SEC:-45}
+    volumes:
+      - ./out:/out
+    # Bash wrapper: tee logs to /out/master.log so verify.sh can grep them
+    # without depending on `docker compose logs`.
+    command:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        timeout "${TEST_DURATION_SEC}" \
+          /src/sdk/build/samples/kvsWebrtcClientMaster "${KVS_CHANNEL_NAME}" video-and-audio H264 OPUS 2>&1 \
+          | tee /out/master.log
+        rc=$$?
+        # timeout returns 124 on hit — that's the expected steady-state exit.
+        if [ "$$rc" = "124" ]; then exit 0; else exit $$rc; fi
+
+  viewer:
+    image: kvs-integration:latest
+    depends_on:
+      master:
+        # `service_started` is enough — the master grabs the channel before
+        # exec'ing into its hot loop. The viewer's own retry on signaling
+        # connect handles any small race.
+        condition: service_started
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?must be set in .env}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?must be set in .env}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_KVS_LOG_LEVEL: ${AWS_KVS_LOG_LEVEL:-3}
+      KVS_CHANNEL_NAME: ${KVS_CHANNEL_NAME:?must be set in .env}
+      TEST_DURATION_SEC: ${TEST_DURATION_SEC:-45}
+    volumes:
+      - ./out:/out
+    command:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        # Small head start so the master finishes its CreateSignalingChannel /
+        # GetSignalingChannelEndpoint round trip before we connect.
+        sleep 5
+        timeout "${TEST_DURATION_SEC}" \
+          /src/sdk/build/samples/kvsWebrtcClientViewer "${KVS_CHANNEL_NAME}" video-and-audio H264 OPUS 2>&1 \
+          | tee /out/viewer.log
+        rc=$$?
+        if [ "$$rc" = "124" ]; then exit 0; else exit $$rc; fi

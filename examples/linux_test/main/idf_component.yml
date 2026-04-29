@@ -1,19 +1,10 @@
 ## IDF Component Manager Manifest File
-## Linux integration test — pulls the SDK components needed for WebRTC master,
-## minus media_stream/network_coprocessor (those are ESP-only).
+## Linux-target canary — depends only on the espressif-port components that
+## already have IDF_TARGET=linux build paths today (esp_webrtc_utils:7-9 in
+## components/esp_webrtc_utils/CMakeLists.txt). Adding kvs_webrtc / kvs_signaling /
+## app_webrtc here requires those components to grow Linux-target conditionals
+## first (TODO tracked separately).
 dependencies:
   esp_webrtc_utils:
     path: ${KVS_SDK_PATH}/components/esp_webrtc_utils
-    version: "*"
-
-  kvs_webrtc:
-    path: ${KVS_SDK_PATH}/components/kvs_webrtc
-    version: "*"
-
-  app_webrtc:
-    path: ${KVS_SDK_PATH}/components/app_webrtc
-    version: "*"
-
-  kvs_signaling:
-    path: ${KVS_SDK_PATH}/components/kvs_signaling
     version: "*"

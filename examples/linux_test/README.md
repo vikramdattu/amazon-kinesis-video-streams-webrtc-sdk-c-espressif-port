@@ -1,14 +1,27 @@
-# Linux integration test
+# Linux build canary
 
-This example is built **only for the Linux IDF target** and is the canary used
-by `tests/docker/` to drive the espressif-port KVS WebRTC SDK end-to-end as a
-master peer, against the upstream `kvsWebRTCClientViewer` sample running as
-the viewer.
+This example is built **only for the Linux IDF target** and validates that the
+espressif-port SDK's Linux-buildable subset compiles end-to-end through
+ESP-IDF's component manager, mbedtls, lwip, and the Linux-FreeRTOS shim.
 
-It deliberately does **not** depend on `media_stream` or
-`network_coprocessor` (those are ESP-only); media is read from the
-pre-recorded H.264 + Opus sample frames that ship with the upstream KVS SDK
-submodule (`amazon-kinesis-video-streams-webrtc-sdk-c/samples/`).
+## Current scope (Phase 1)
+
+Depends only on `esp_webrtc_utils`, which is the one in-tree component with
+proper `IDF_TARGET STREQUAL "linux"` branches in its CMakeLists today (see
+`components/esp_webrtc_utils/CMakeLists.txt:1-9`). At runtime the canary
+runs an `esp_work_queue` task to prove the queue works on POSIX-FreeRTOS.
+
+## Future scope (Phase 1b — separate work)
+
+Adding `kvs_signaling`, `kvs_webrtc`, and `app_webrtc` requires those
+components to grow Linux-target paths first; today they directly include
+ESP-only headers (`media_stream.h`, `driver`, `spi_flash`, `nvs_flash`).
+Tracked separately in Athena.
+
+For the **end-to-end media integration test** (Docker, KVS signaling, recording
++ verification), see [`../../tests/docker/`](../../tests/docker/) — that test
+runs upstream's `kvsWebRTCClientMaster`/`Viewer` (with our patches applied),
+not the in-tree SDK components.
 
 ## Build
 
@@ -25,27 +38,8 @@ The build produces `build/linux_test` (a normal Linux ELF).
 
 ## Run
 
-Runtime configuration via env vars:
-
-```
-AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY    real KVS credentials
-AWS_DEFAULT_REGION                          e.g. us-west-2
-KVS_CHANNEL_NAME                            existing signaling channel name
-```
-
-Direct invocation:
-
 ```bash
-AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_DEFAULT_REGION=us-west-2 \
-KVS_CHANNEL_NAME=esp-port-it-test ./build/linux_test
+./build/linux_test
 ```
 
-For the full integration test (master + viewer in containers, recording +
-verification of received media), see [`../../tests/docker/`](../../tests/docker/).
-
-## Status
-
-- **Phase 1 (canary):** boots, prints env, exits 0 — proves the Linux build
-  pipeline works for the SDK component graph.
-- **Phase 1b (in progress):** real signaling + peer connection + sample-frame
-  feed.
+Expected output ends with `linux_test: canary OK`.

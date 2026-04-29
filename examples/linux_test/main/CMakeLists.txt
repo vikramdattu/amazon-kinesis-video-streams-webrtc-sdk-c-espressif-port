@@ -4,5 +4,5 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES app_webrtc kvs_webrtc kvs_signaling esp_webrtc_utils
+    REQUIRES esp_webrtc_utils esp_event
 )

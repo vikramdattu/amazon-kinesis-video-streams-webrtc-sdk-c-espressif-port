@@ -275,10 +275,25 @@ void app_main(void)
     }
 
     // Get the media capture interfaces for sending audio/video
+    /* On real ESP targets, capture frames live from camera + mic.
+     * In QEMU there's neither, so use the file-based capture path
+     * which loops through /spiffs/samples/frame-*.h264 (and the
+     * matching Opus frames for audio). Same media_stream_video_capture_t*
+     * shape — the rest of the WebRTC pipeline doesn't care where the
+     * frames came from. */
+#if CONFIG_APP_VIDEO_USE_FILE_FRAMES
+    media_stream_video_capture_t *video_capture = media_stream_get_file_video_capture_if();
+    media_stream_audio_capture_t *audio_capture = media_stream_get_file_audio_capture_if();
+    /* No playback in QEMU mode — we're a sender-only master. */
+    media_stream_video_player_t *video_player = NULL;
+    media_stream_audio_player_t *audio_player = NULL;
+    ESP_LOGI(TAG, "Video/audio capture: file-based (CONFIG_APP_VIDEO_USE_FILE_FRAMES=y)");
+#else
     media_stream_video_capture_t *video_capture = media_stream_get_video_capture_if();
     media_stream_audio_capture_t *audio_capture = media_stream_get_audio_capture_if();
     media_stream_video_player_t *video_player = media_stream_get_video_player_if();
     media_stream_audio_player_t *audio_player = media_stream_get_audio_player_if();
+#endif
 
 #ifdef CONFIG_ESP_P4_CORE_BOARD
     audio_capture = NULL;

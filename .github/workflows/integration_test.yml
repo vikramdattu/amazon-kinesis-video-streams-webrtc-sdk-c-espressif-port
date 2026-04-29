@@ -161,16 +161,37 @@ jobs:
           idf.py --preview set-target linux
           idf.py build || echo "::warning::linux_test build still has undefined symbols; tracked separately"
 
-  esp32s3_qemu_boot_smoke:
-    name: "esp32s3 QEMU boot smoke | webrtc_classic"
+  esp32s3_qemu_kvs_test:
+    name: "esp32s3 QEMU + Python viewer | webrtc_classic"
     runs-on: ubuntu-22.04
     container: espressif/idf:release-v5.5
-    timeout-minutes: 30
+    # Skip on forks: AWS_* secrets aren't available in PRs from forks.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
+    timeout-minutes: 45
+
+    env:
+      # Per-run KVS channel; deleted at end of job. Different prefix
+      # from the linux_loopback / python_loopback jobs so concurrent
+      # runs don't collide.
+      KVS_CHANNEL_NAME: ${{ secrets.KVS_QEMU_CHANNEL_NAME || format('espressif-port-qemu-{0}', github.run_id) }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+      TEST_DURATION_SEC: 60
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Verify AWS creds
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        id: creds
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "::warning::AWS_ACCESS_KEY_ID not set — skipping QEMU integration test."
+            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
 
       - name: Apply SDK patches
         shell: bash
@@ -181,20 +202,43 @@ jobs:
           git config user.name "CI"
           git am ../patches/*.patch
 
-      - name: Install qemu-xtensa
+      - name: Install qemu-xtensa + Python viewer deps + aws CLI
+        if: steps.creds.outputs.skip != '1'
         shell: bash
         run: |
           . /opt/esp/idf/export.sh
           python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          echo "qemu-system-xtensa available at:"
-          which qemu-system-xtensa || true
+          which qemu-system-xtensa
+          # Python viewer + ffprobe + aws CLI for channel cleanup.
+          apt-get update && apt-get install -y --no-install-recommends \
+              ffmpeg libopus0 libvpx7 libsrtp2-1 awscli
+          pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
 
-      - name: Build webrtc_classic for esp32s3 with QEMU overlay
+      - name: Generate sdkconfig overlay with AWS creds
+        if: steps.creds.outputs.skip != '1'
+        env:
+          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          # The base overlay sdkconfig.defaults.qemu sets all the
+          # CONFIG_AWS_* vars to empty strings. This .local overlay
+          # comes last in the chain and overrides them with the
+          # actual secret values.
+          cat > examples/webrtc_classic/sdkconfig.defaults.qemu.local <<EOF
+          CONFIG_AWS_ACCESS_KEY_ID="${ACCESS_KEY}"
+          CONFIG_AWS_SECRET_ACCESS_KEY="${SECRET_KEY}"
+          CONFIG_AWS_SESSION_TOKEN="${SESSION_TOKEN}"
+          CONFIG_AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION}"
+          CONFIG_AWS_KVS_CHANNEL_NAME="${KVS_CHANNEL_NAME}"
+          EOF
+
+      - name: Build webrtc_classic for esp32s3 with QEMU + creds overlays
+        if: steps.creds.outputs.skip != '1'
         env:
           KVS_SDK_PATH: ${{ github.workspace }}
-          # SPIRAM off, USB-JTAG off, UART console on, DIO @ 40 MHz.
-          # See examples/webrtc_classic/sdkconfig.defaults.qemu for why.
-          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.qemu"
+          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.qemu;sdkconfig.defaults.qemu.local"
         shell: bash
         run: |
           cd examples/webrtc_classic
@@ -202,34 +246,90 @@ jobs:
           idf.py set-target esp32s3
           idf.py build
 
-      - name: Boot smoke under QEMU (30 s)
+      - name: Run QEMU + Python viewer against same KVS channel
+        if: steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          OUT_PATH: ${{ github.workspace }}/qemu_recording.mkv
+          LOG_PATH: ${{ github.workspace }}/python_viewer.log
         shell: bash
         run: |
           cd examples/webrtc_classic
           . /opt/esp/idf/export.sh
-          # idf.py qemu is interactive; run with timeout and capture
-          # the serial. The boot is "good" if the firmware reaches
-          # `app_main()` — that proves bootloader + 2nd stage +
-          # partition table + ELF load + main task all came up.
-          set +e
-          timeout 30 idf.py qemu --qemu-extra-args="-no-reboot" \
-              > qemu_boot.log 2>&1
-          rc=$?
-          set -e
-          # SIGTERM (124) is the expected outcome — we kill QEMU after
-          # the timeout. Any other non-zero is a failure.
-          if [ "$rc" != "0" ] && [ "$rc" != "124" ] && [ "$rc" != "143" ]; then
-              echo "::error::idf.py qemu exited with unexpected code $rc"
-              tail -50 qemu_boot.log
-              exit $rc
-          fi
-          tail -80 qemu_boot.log
-          grep -q "Calling app_main()" qemu_boot.log
+          mkdir -p "$(dirname "$OUT_PATH")"
+          # Start QEMU as background; serial → qemu_serial.log.
+          ( idf.py qemu --qemu-extra-args="-no-reboot" \
+              > qemu_serial.log 2>&1 & echo $! > qemu.pid )
+          # Give the firmware time to boot, get IP, sync time, and
+          # reach the signaling-init retry loop.
+          sleep 25
+          echo "::group::Firmware boot snippet"
+          tail -40 qemu_serial.log
+          echo "::endgroup::"
+          # Run the Python viewer; it self-terminates after TEST_DURATION_SEC.
+          python tests/docker/python_viewer/viewer.py | tee "$LOG_PATH" &
+          VIEWER_PID=$!
+          # Wait up to TEST_DURATION_SEC + grace.
+          wait $VIEWER_PID || true
+          # Kill QEMU.
+          if [ -f qemu.pid ]; then kill -TERM $(cat qemu.pid) 2>/dev/null || true; fi
+          pkill -TERM qemu-system-xtensa 2>/dev/null || true
+          sleep 2
+          pkill -KILL qemu-system-xtensa 2>/dev/null || true
 
-      - name: Upload QEMU boot log
+      - name: Verify recording (ffprobe)
+        if: steps.creds.outputs.skip != '1'
+        shell: bash
+        run: |
+          if [ ! -s "${{ github.workspace }}/qemu_recording.mkv" ]; then
+            echo "::error::qemu_recording.mkv missing or empty"
+            exit 1
+          fi
+          ffprobe -v error -show_streams -count_packets \
+              "${{ github.workspace }}/qemu_recording.mkv" \
+              > ffprobe.txt
+          cat ffprobe.txt
+          # Expect at least one h264 video stream with ≥30 packets.
+          grep -q "codec_name=h264" ffprobe.txt
+          PACKETS=$(grep "nb_read_packets=" ffprobe.txt | head -1 | cut -d= -f2)
+          [ "${PACKETS:-0}" -ge 30 ] || {
+            echo "::error::Only ${PACKETS:-0} packets received (need ≥30)"
+            exit 1
+          }
+
+      - name: Delete KVS channel
+        if: always() && steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          ARN=$(aws kinesisvideo describe-signaling-channel \
+              --channel-name "$KVS_CHANNEL_NAME" \
+              --query 'ChannelInfo.ChannelARN' --output text 2>/dev/null) || ARN=""
+          if [ -n "$ARN" ] && [ "$ARN" != "None" ]; then
+            VERSION=$(aws kinesisvideo describe-signaling-channel \
+                --channel-name "$KVS_CHANNEL_NAME" \
+                --query 'ChannelInfo.Version' --output text)
+            aws kinesisvideo delete-signaling-channel \
+                --channel-arn "$ARN" \
+                ${VERSION:+--current-version "$VERSION"} \
+                && echo "deleted $KVS_CHANNEL_NAME" \
+                || echo "delete failed (channel may already be gone)"
+          fi
+
+      - name: Upload QEMU + viewer artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-boot-log-${{ github.run_id }}
-          path: examples/webrtc_classic/qemu_boot.log
+          name: qemu-kvs-test-${{ github.run_id }}
+          path: |
+            examples/webrtc_classic/qemu_serial.log
+            python_viewer.log
+            qemu_recording.mkv
+            ffprobe.txt
+          retention-days: 7
           retention-days: 7

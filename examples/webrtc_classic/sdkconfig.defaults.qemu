@@ -52,3 +52,21 @@ CONFIG_ETH_USE_OPENETH=y
 # it's belt-and-braces).
 CONFIG_ESP_WIFI_SSID="qemu"
 CONFIG_ESP_WIFI_PASSWORD="qemu1234"
+
+# Stream H.264 frames from SPIFFS (samples/frame-*.h264) instead of
+# from the camera. QEMU has no camera; the file-based capture path in
+# media_stream gives the WebRTC pipeline real frames to send so the
+# Python viewer can record + ffprobe-validate them.
+CONFIG_APP_VIDEO_USE_FILE_FRAMES=y
+
+# Use direct AWS access keys instead of AWS IoT Core credentials. The
+# IoT Core path needs a per-device certificate + private key in
+# /spiffs/certs/, which we deliberately don't ship (per-device
+# secrets shouldn't be committed). CI injects the keys via a
+# sdkconfig.defaults.qemu.local overlay generated from repo secrets.
+CONFIG_IOT_CORE_ENABLE_CREDENTIALS=n
+CONFIG_AWS_ACCESS_KEY_ID=""
+CONFIG_AWS_SECRET_ACCESS_KEY=""
+CONFIG_AWS_SESSION_TOKEN=""
+CONFIG_AWS_DEFAULT_REGION="us-west-2"
+CONFIG_AWS_KVS_CHANNEL_NAME="espressif-port-qemu-test"

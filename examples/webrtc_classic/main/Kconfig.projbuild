@@ -1,0 +1,18 @@
+menu "WebRTC Classic example"
+
+    config APP_VIDEO_USE_FILE_FRAMES
+        bool "Stream sample H.264 frames from SPIFFS instead of camera"
+        default n
+        help
+            On real ESP hardware, webrtc_classic captures live frames from
+            the camera (and audio from the mic). For QEMU runs there's
+            neither — instead loop through /spiffs/samples/frame-*.h264
+            (and the matching Opus frames) via media_stream's
+            file-based capture interface. Same WebRTC pipeline, just a
+            different frame source.
+
+            Default off; the docker integration test enables this via
+            sdkconfig.defaults.qemu so the QEMU master actually has
+            something to send to the Python viewer.
+
+endmenu

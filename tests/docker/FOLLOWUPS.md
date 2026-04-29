@@ -163,7 +163,71 @@ finished → viewer reports `Track received` (video + audio) →
 `Applied SDP_ANSWER` → `ICE connection state: completed`. DTLS
 handshake completion + SRTP frame flow is the next gap.
 
-## 7c. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
+## 7d. linux_test: ICE nomination times out → no media frames flow
+
+**Status:** open. Symptoms:
+
+- Master reaches `ICE_AGENT_STATE_CHECK_CONNECTION → CONNECTED → NOMINATING`
+  for the offer/answer pair against the Python aiortc viewer.
+- After 30 s `iceCandidateNominationTimeout`, master fails with
+  `fromNominatingIceAgentState(): operation returned status code:
+  0x5a000013` (`STATUS_ICE_FAILED_TO_NOMINATE_CANDIDATE_PAIR`).
+- Master log is full of STUN binding error responses from peer:
+  ```
+  handleStunPacket(): Error STUN packet. Packet type: 0x111.
+      0009000F 00000400 4261642052657175657374 ...
+  handleStunPacket(): Error binding response! <local-ufrag> <remote-ufrag>
+  ```
+  ERROR-CODE 0x400 / "Bad Request" — the peer rejects each binding
+  request. aiortc's `aioice.ice.request_received()`
+  (`aioice/ice.py:1117`) returns 400 only on USERNAME mismatch or
+  MESSAGE-INTEGRITY HMAC failure, so the integrity / username
+  format on the master's binding request is not what aiortc
+  expects.
+- Viewer side reports `ICE connection state: completed` with
+  `Track received: kind=video / kind=audio` — but those are the
+  RTCRtpReceiver objects created by setRemoteDescription, not actual
+  media frames over the wire. aiortc's "completed" likely reflects
+  its own perspective (incoming binding requests succeeded), not
+  master's.
+- TURN-over-TLS works now (`patches/0009-...`), but the relay path
+  has the same nomination problem, so this is upstream of TURN.
+
+**Likely causes:**
+
+1. ICE-CONTROLLED / ICE-CONTROLLING attribute mismatch in master's
+   STUN binding request (aiortc `request_received()` checks role
+   conflict at `aioice/ice.py:1121-1132`).
+2. USERNAME format wrong:
+   `<expected-by-aiortc>` is `<aiortc-ufrag>:<master-ufrag>`. KVS
+   SDK should produce that, but the format may diverge under
+   non-trickle vs trickle paths or for ufrag values containing
+   special chars.
+3. Master / viewer are both on the same macOS host with multiple
+   active interfaces (en0 WiFi, utun*, en4) — host candidates from
+   different subnets, source IP / port mismatch on send-to vs
+   receive-from. macOS pf default-deny on inbound UDP per interface
+   is also possible.
+
+**Investigation steps:**
+
+- Add `tcpdump -i any -w /tmp/master.pcap port 50000-65535` while
+  the test runs; inspect a master→viewer STUN binding request and
+  the matching 400 response in Wireshark to see which exact
+  attribute aiortc rejected.
+- Compare master's STUN attribute set against
+  `aioice.stun.parse_message`. Patch master's iceUtils.c if
+  needed, or align role attributes.
+- Try the same setup on a Linux host (no multi-interface, no pf):
+  this is the configuration CI will actually run, and it may "just
+  work" once we get past the macOS-host quirks.
+- If the local-host setup proves too quirky, gate the Python
+  viewer + master to run inside the same Docker network (the
+  original intent — `tests/docker/docker-compose.yml`); local
+  macOS run remains useful only up to the ICE-handshake green
+  signal we already have.
+
+## 7e. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
 
 **Status:** trivial; ergonomic. The default path `samples/h264SampleFrames`
 is relative to cwd. Running `./build/linux_test.elf` from

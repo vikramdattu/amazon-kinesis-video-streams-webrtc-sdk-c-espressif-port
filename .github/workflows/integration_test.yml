@@ -332,4 +332,3 @@ jobs:
             qemu_recording.mkv
             ffprobe.txt
           retention-days: 7
-          retention-days: 7

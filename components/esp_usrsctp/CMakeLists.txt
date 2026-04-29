@@ -17,13 +17,18 @@ idf_component_register(
         freertos
 )
 
-# Set up environment for usrsctp
-if(CONFIG_IDF_TARGET STREQUAL "linux")
-    set(sctp_use_lwip OFF)
-    set(sctp_use_rtos OFF)
+# Set up environment for usrsctp. Use CACHE FORCE because the inner
+# usrsctp/CMakeLists.txt declares these as option() — without CACHE
+# our local set() gets overridden by option()'s default at
+# add_subdirectory time, and SCTP_USE_LWIP ends up defined on Linux
+# (which then drags in lwip-specific headers usrsctp's userspace path
+# can't satisfy on a host build).
+if(IDF_TARGET STREQUAL "linux")
+    set(sctp_use_lwip OFF CACHE BOOL "build with lwip" FORCE)
+    set(sctp_use_rtos OFF CACHE BOOL "build with rtos" FORCE)
 else()
-    set(sctp_use_lwip ON)
-    set(sctp_use_rtos ON)
+    set(sctp_use_lwip ON CACHE BOOL "build with lwip" FORCE)
+    set(sctp_use_rtos ON CACHE BOOL "build with rtos" FORCE)
 endif()
 
 # Add definitions needed by usrsctp
@@ -67,7 +72,13 @@ set(MBEDTLS_LIBRARIES mbedtls mbedcrypto mbedx509)
 # Add the directory with our custom FindMbedTLS.cmake to CMAKE_MODULE_PATH
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_BINARY_DIR}")
 
-# Add compiler flags to suppress warnings
+# Add compiler flags to suppress warnings. Apple Clang doesn't know about
+# `maybe-uninitialized` (only GCC has that name; LLVM uses plain
+# `uninitialized`), and treats unknown warning options as errors under
+# -Werror. Probe the flag and only add it when supported.
+include(CheckCCompilerFlag)
+check_c_compiler_flag("-Wno-error=maybe-uninitialized" HAS_NO_ERROR_MAYBE_UNINIT)
+
 add_compile_options(
     -Wno-address-of-packed-member
     -Wno-unused-but-set-variable
@@ -77,10 +88,12 @@ add_compile_options(
     -Wno-implicit-function-declaration
     -Wno-incompatible-pointer-types
     -Wno-format
-	-Wno-error=maybe-uninitialized
     -Wno-pedantic
     -Wno-error=pedantic
 )
+if(HAS_NO_ERROR_MAYBE_UNINIT)
+    add_compile_options(-Wno-error=maybe-uninitialized)
+endif()
 
 # Add usrsctp as a subdirectory
 add_subdirectory(${usrsctp_root_dir} ${CMAKE_CURRENT_BINARY_DIR}/usrsctp)

@@ -151,11 +151,10 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DKVS_PLAT_ESP_FREERTOS
 )
 
-# Add definitions for usrsctp
-target_compile_definitions(${COMPONENT_LIB} PUBLIC
-    -DHAVE_SCONN_LEN=1
-    -DSCTP_USE_LWIP=1
-    -DSCTP_USE_RTOS=1
+# Add definitions for usrsctp. SCTP_USE_LWIP / SCTP_USE_RTOS / HAVE_SCONN_LEN
+# are ESP-only; on the Linux IDF target usrsctp uses POSIX sockets +
+# pthreads directly via its userspace path.
+set(_sctp_defs
     -DSCTP_SIMPLE_ALLOCATOR
     -D__Userspace__
     -DINET=1
@@ -163,6 +162,14 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DSCTP_USE_IPV6=0
     -DSCTP_USE_MBEDTLS_SHA1=1
 )
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND _sctp_defs
+        -DHAVE_SCONN_LEN=1
+        -DSCTP_USE_LWIP=1
+        -DSCTP_USE_RTOS=1
+    )
+endif()
+target_compile_definitions(${COMPONENT_LIB} PUBLIC ${_sctp_defs})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format
@@ -191,11 +198,10 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-maybe-uninitialized
 )
 
-# Add definitions for usrsctp
-add_definitions(
-  "-DHAVE_SCONN_LEN=1"
-  "-DSCTP_USE_LWIP=1"
-  "-DSCTP_USE_RTOS=1"
+# Same set, directory-scoped — kept in sync with the
+# target_compile_definitions block above for parity with the older
+# build system. Linux drops the lwip/RTOS bits.
+set(_sctp_dir_defs
   "-DSCTP_SIMPLE_ALLOCATOR"
   "-D__Userspace__"
   "-DINET=1"
@@ -203,6 +209,14 @@ add_definitions(
   "-DSCTP_USE_IPV6=0"
   "-DSCTP_USE_MBEDTLS_SHA1=1"
 )
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND _sctp_dir_defs
+      "-DHAVE_SCONN_LEN=1"
+      "-DSCTP_USE_LWIP=1"
+      "-DSCTP_USE_RTOS=1"
+    )
+endif()
+add_definitions(${_sctp_dir_defs})
 
 if (CONFIG_PREFER_DYNAMIC_ALLOCS)
     add_definitions(-DPREFER_DYNAMIC_ALLOCS=1)

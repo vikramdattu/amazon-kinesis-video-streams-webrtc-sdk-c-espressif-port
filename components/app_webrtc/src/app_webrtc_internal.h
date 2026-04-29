@@ -17,7 +17,6 @@
 /* Application includes */
 #include "app_webrtc.h"
 #include "app_webrtc_if.h"
-#include "media_stream.h"
 
 #ifdef __cplusplus
 extern "C" {

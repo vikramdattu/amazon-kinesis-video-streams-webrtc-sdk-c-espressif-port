@@ -273,7 +273,9 @@ jobs:
           tail -40 qemu_serial.log
           echo "::endgroup::"
           # Run the Python viewer; it self-terminates after TEST_DURATION_SEC.
-          python tests/docker/python_viewer/viewer.py | tee "$LOG_PATH" &
+          # We're cwd'd inside examples/webrtc_classic; use the repo-root
+          # absolute path to find viewer.py.
+          python "${{ github.workspace }}/tests/docker/python_viewer/viewer.py" | tee "$LOG_PATH" &
           VIEWER_PID=$!
           # Wait up to TEST_DURATION_SEC + grace.
           wait $VIEWER_PID || true

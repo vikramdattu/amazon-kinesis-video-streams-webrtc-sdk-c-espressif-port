@@ -278,9 +278,11 @@ jobs:
           tail -40 qemu_serial.log
           echo "::endgroup::"
           # Run the Python viewer; it self-terminates after TEST_DURATION_SEC.
-          # We're cwd'd inside examples/webrtc_classic; use the repo-root
-          # absolute path to find viewer.py.
-          python "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" | tee "$LOG_PATH" &
+          # `-u` for unbuffered output so tee/$LOG_PATH actually has
+          # content if the script crashes (otherwise the buffer is
+          # lost on abort). 2>&1 to capture stderr (tracebacks,
+          # logging) into the same log file.
+          python -u "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" 2>&1 | tee "$LOG_PATH" &
           VIEWER_PID=$!
           # Wait up to TEST_DURATION_SEC + grace.
           wait $VIEWER_PID || true

@@ -39,6 +39,13 @@ CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 # helpers; tightening these cuts down on init-time crashes.
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
 
+# Verbose runtime logging — the QEMU integration test only runs ~60s
+# and the serial log is uploaded as artifact. We want detail on
+# offer-processing failures (the master returns generic
+# STATUS_INTERNAL_ERROR 0xc when SDP parse / codec match fails).
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_LOG_DEFAULT_LEVEL=4
+
 # Networking: drive through the OpenCores Ethernet model that
 # qemu-xtensa exposes (`-nic user,model=open_eth`) instead of WiFi.
 # app_common's app_wifi_prov_init() dispatches transparently — same

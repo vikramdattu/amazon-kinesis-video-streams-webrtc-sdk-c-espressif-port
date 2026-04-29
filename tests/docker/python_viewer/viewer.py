@@ -166,9 +166,12 @@ async def run() -> int:
 
     async with websockets.connect(signed_wss, max_size=2**20) as ws:
         offer_payload = {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp}
+        log.info("=== SDP OFFER (sent to master) ===\n%s\n=== END SDP ===",
+                 pc.localDescription.sdp)
         await ws.send(json.dumps({
             "action": "SDP_OFFER",
             "messagePayload": base64.b64encode(json.dumps(offer_payload).encode()).decode(),
+            "correlationId": uuid.uuid4().hex,
         }))
         log.info("Sent SDP_OFFER to master")
 

@@ -95,7 +95,36 @@ Our local workaround: `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512` in `sdkconfig.de
 
 **Upstream fix:** change `calloc` → `heap_caps_calloc(1, sizeof(emac_opencores_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)`. Same pattern likely applies to other ETH drivers (`emac_dma`, `emac_esp32`).
 
-## 6. KVS C SDK `Include.h` documents `0x5a00002c` as `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED`
+## 6. linux_test: srtp_init() returns non-zero on first run
+
+**Status:** linux_test build is working end-to-end on macOS host (and
+should work on Linux CI runner). Binary launches, signaling config
+loads, `app_webrtc_init` succeeds, `WebRTC initialized` callback
+fires. Then `app_webrtc_run` → `kvs_webrtc_init` → `srtp_init()`
+returns a non-`srtp_err_status_ok` value, raising
+`STATUS_SRTP_INIT_FAILED (0x5b000005)` from
+`PeerConnection.c:1833`.
+
+`srtp_init()` calls `srtp_crypto_kernel_init()` in
+`crypto/kernel/crypto_kernel.c:72`. Likely candidates:
+
+- libsrtp's MbedTLS / OpenSSL crypto backend not initialised. We
+  build with mbedtls; the auto-init path may need
+  `srtp_install_log_handler` or a specific
+  `srtp_init_*` flag on Linux.
+- Entropy source (`/dev/urandom`) not opened on first call.
+- Cipher self-tests failing — `cipher_type_self_test` is run inside
+  kernel init.
+
+Repro: `./build/linux_test.elf` from `examples/linux_test/` with
+`KVS_FRAMES_DIR=…/samples` and AWS env vars set.
+
+Next steps: enable libsrtp debug logging via
+`srtp_install_log_handler`, re-run, identify which sub-init returned
+the error code, then fix the underlying call site (probably a flag
+in our `components/libsrtp2/CMakeLists.txt` for the Linux target).
+
+## 7. KVS C SDK `Include.h` documents `0x5a00002c` as `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED`
 
 **Status:** documentation/quality-of-life. Not blocking.
 

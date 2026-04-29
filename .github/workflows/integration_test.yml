@@ -256,10 +256,15 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-          OUT_PATH: ${{ github.workspace }}/qemu_recording.mkv
-          LOG_PATH: ${{ github.workspace }}/python_viewer.log
         shell: bash
         run: |
+          # Build paths from $GITHUB_WORKSPACE inside the shell — the
+          # template `${{ github.workspace }}` expands to the host
+          # path on the runner, which doesn't exist inside this
+          # container. The runtime $GITHUB_WORKSPACE env var is
+          # auto-remapped to the container's mount.
+          export OUT_PATH="$GITHUB_WORKSPACE/qemu_recording.mkv"
+          export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
           cd examples/webrtc_classic
           . /opt/esp/idf/export.sh
           mkdir -p "$(dirname "$OUT_PATH")"
@@ -275,7 +280,7 @@ jobs:
           # Run the Python viewer; it self-terminates after TEST_DURATION_SEC.
           # We're cwd'd inside examples/webrtc_classic; use the repo-root
           # absolute path to find viewer.py.
-          python "${{ github.workspace }}/tests/docker/python_viewer/viewer.py" | tee "$LOG_PATH" &
+          python "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" | tee "$LOG_PATH" &
           VIEWER_PID=$!
           # Wait up to TEST_DURATION_SEC + grace.
           wait $VIEWER_PID || true
@@ -289,7 +294,7 @@ jobs:
         if: steps.creds.outputs.skip != '1'
         shell: bash
         run: |
-          MKV="${{ github.workspace }}/qemu_recording.mkv"
+          MKV="${GITHUB_WORKSPACE}/qemu_recording.mkv"
           if [ ! -s "$MKV" ]; then
             echo "::error::qemu_recording.mkv missing or empty"
             exit 1

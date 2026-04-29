@@ -38,3 +38,17 @@ CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 # QEMU doesn't emulate. The example reads these via Kconfig-controlled
 # helpers; tightening these cuts down on init-time crashes.
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+
+# Networking: drive through the OpenCores Ethernet model that
+# qemu-xtensa exposes (`-nic user,model=open_eth`) instead of WiFi.
+# app_common's app_wifi_prov_init() dispatches transparently — same
+# call site in webrtc_main.c, just a different transport.
+CONFIG_APP_NETWORK_USE_OPENETH=y
+CONFIG_APP_NETWORK_PROV_BLE=n
+CONFIG_ETH_USE_OPENETH=y
+
+# Provide WiFi-style fallback creds in case the Kconfig-fallback path
+# in app_wifi_prov_init() runs (it shouldn't with USE_OPENETH=y, but
+# it's belt-and-braces).
+CONFIG_ESP_WIFI_SSID="qemu"
+CONFIG_ESP_WIFI_PASSWORD="qemu1234"

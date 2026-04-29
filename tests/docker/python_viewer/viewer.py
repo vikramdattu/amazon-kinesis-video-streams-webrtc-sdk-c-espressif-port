@@ -111,6 +111,38 @@ async def run() -> int:
     log.info("region=%s channel=%s client_id=%s duration=%ds out=%s",
              REGION, CHANNEL, CLIENT_ID, DURATION, OUT_PATH)
 
+    # Suppress non-fatal TURN/STUN errors so a single Forbidden IP
+    # / 403 from KVS doesn't kill the whole event loop. KVS rejects
+    # STUN binding requests from some IPs (e.g. GitHub-hosted runner
+    # Azure ranges) with `403 Forbidden IP`; aiortc otherwise
+    # propagates that as an unhandled task exception and tears down
+    # the RTCIceTransport. The ICE flow can still succeed via host
+    # / srflx / TURN candidates that *do* reach KVS, so we just log
+    # and continue. Pattern borrowed from
+    # esp-rainmaker-cli/rmaker_lib/kvs_streaming.py.
+    pc_holder = {"pc": None}
+
+    def loop_exception_handler(loop, context):
+        exc = context.get("exception")
+        if exc is not None:
+            etype = type(exc).__name__
+            estr = str(exc)
+            if (
+                "TransactionFailed" in etype
+                or "TURN" in estr
+                or "STUN" in estr
+                or "Forbidden IP" in estr
+                or " 403 " in f" {estr} "
+            ):
+                pc = pc_holder["pc"]
+                if pc and pc.iceConnectionState in ("connected", "completed"):
+                    return
+                log.warning("Suppressing non-fatal TURN/STUN error: %s: %s", etype, estr)
+                return
+        log.warning("Unhandled async error: %s", context.get("message", "?"))
+
+    asyncio.get_running_loop().set_exception_handler(loop_exception_handler)
+
     kvs = boto3.client("kinesisvideo", region_name=REGION)
     arn = get_channel_arn(kvs)
     endpoints = resolve_endpoints(kvs, arn)
@@ -118,6 +150,7 @@ async def run() -> int:
     signed_wss = sigv4_presign_wss(endpoints["WSS"], arn)
 
     pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
+    pc_holder["pc"] = pc
     recorder = MediaRecorder(OUT_PATH)
 
     # Receive-only H.264 + Opus, matching what the C master sends.

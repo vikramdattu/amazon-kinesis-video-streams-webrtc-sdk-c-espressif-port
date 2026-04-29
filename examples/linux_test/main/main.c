@@ -24,6 +24,8 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include <sys/stat.h>
+
 #include "app_webrtc.h"
 #include "kvs_signaling.h"
 #include "kvs_peer_connection.h"
@@ -135,8 +137,29 @@ void app_main(void)
     sig.awsSecretKey = (char *) secret_key;
     sig.awsSessionToken = session_tok ? (char *) session_tok : (char *) "";
     sig.awsRegion = (char *) region;
-    /* No SPIFFS on Linux — let mbedtls fall back to its bundled CA list. */
-    sig.caCertPath = NULL;
+    /* Use the host's system CA bundle. KVS_CA_CERT_PATH overrides if
+     * set (CI / docker can point at whatever path the image ships).
+     * Defaults: /etc/ssl/certs/ca-certificates.crt on Debian / Ubuntu
+     * (espressif/idf:release-v5.5 image too); /etc/ssl/cert.pem on
+     * macOS (LibreSSL); /etc/pki/tls/certs/ca-bundle.crt on Fedora /
+     * RHEL. */
+    const char *ca_path = getenv("KVS_CA_CERT_PATH");
+    if (!ca_path || !*ca_path) {
+        struct stat st;
+        if (stat("/etc/ssl/certs/ca-certificates.crt", &st) == 0) {
+            ca_path = "/etc/ssl/certs/ca-certificates.crt";
+        } else if (stat("/etc/ssl/cert.pem", &st) == 0) {
+            ca_path = "/etc/ssl/cert.pem";
+        } else if (stat("/etc/pki/tls/certs/ca-bundle.crt", &st) == 0) {
+            ca_path = "/etc/pki/tls/certs/ca-bundle.crt";
+        }
+    }
+    sig.caCertPath = (char *) ca_path;
+    if (ca_path) {
+        ESP_LOGI(TAG, "Using CA bundle: %s", ca_path);
+    } else {
+        ESP_LOGW(TAG, "No CA bundle found — TLS handshake will likely fail");
+    }
 
     app_webrtc_config_t cfg = APP_WEBRTC_CONFIG_DEFAULT();
     cfg.signaling_client_if = kvs_signaling_client_if_get();

@@ -58,6 +58,16 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DLWS_WITH_CUSTOM_HTTP_HEADERS=1")
 # Suppress unused variable warnings from upstream libwebsockets code
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error=cpp -Wno-deprecated-declarations -Wno-unused-variable")
 
+# IDF's mbedtls port headers use bare `#if CONFIG_IDF_TARGET_ESP32xx`
+# patterns — fine on real ESP targets where the macros are 0/1, but on
+# the IDF Linux target none of CONFIG_IDF_TARGET_* are defined and lws
+# compiles with -Werror,-Wundef. Drop -Werror=undef on Linux so lws's
+# mbedtls wrapper sources can include IDF's mbedtls headers without
+# treating "undefined" as a real signal.
+if(IDF_TARGET STREQUAL "linux")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error=undef -Wno-undef")
+endif()
+
 # Disable libwebsockets export targets before adding subdirectory
 set(LWS_WITH_EXPORT_LWSTARGETS OFF CACHE BOOL "Disable lws export targets" FORCE)
 
@@ -81,6 +91,25 @@ if(IDF_TARGET STREQUAL "linux")
     # Force LWS to use mbedtls too so HMAC_CTX etc. resolve to mbedtls
     # types instead of trying to pull in OpenSSL headers.
     set(LWS_WITH_MBEDTLS ON CACHE BOOL "" FORCE)
+    # Pre-pin LWS_MBEDTLS_{LIBRARIES,INCLUDE_DIRS} to IDF's mbedtls
+    # component before lws's lib/tls/mbedtls/CMakeLists.txt is read.
+    # Otherwise lws falls into its `find_library(MBEDTLS_LIBRARY mbedtls)`
+    # path, which on macOS hosts picks up `/opt/homebrew/lib/libmbedtls.dylib`
+    # (Homebrew mbedtls 3.6.4) and propagates it through libwebsockets's
+    # PUBLIC link interface — ahead of IDF's `libmbedcrypto.a` etc. in
+    # the link order. The Homebrew build has a different config (no
+    # MBEDTLS_X509_CRT_WRITE_C among others), so symbol resolution from
+    # the dylib makes `createRtcCertificate()` fail with 0x59000001 at
+    # runtime even though the IDF static archives are present in the
+    # link line. Targets `mbedtls`, `mbedx509`, `mbedcrypto` are added
+    # by IDF's mbedtls component (REQUIRES `mbedtls` ensures it has
+    # been processed before this component's CMake runs).
+    set(LWS_MBEDTLS_LIBRARIES mbedtls mbedx509 mbedcrypto CACHE STRING "" FORCE)
+    idf_component_get_property(_idf_mbedtls_dir mbedtls COMPONENT_DIR)
+    set(LWS_MBEDTLS_INCLUDE_DIRS
+        "${_idf_mbedtls_dir}/mbedtls/include"
+        "${_idf_mbedtls_dir}/port/include"
+        CACHE STRING "" FORCE)
     # Skip the upstream lws test apps + minimal examples on the Linux
     # IDF target — they fail to link against IDF's static archive set
     # (need lws_open and other libc-platform-only symbols, plus pull
@@ -94,6 +123,13 @@ if(IDF_TARGET STREQUAL "linux")
     # which is itself only compiled under `LWS_WITH_FILE_OPS`. Turn
     # file_ops back on for the Linux IDF target so the symbol resolves.
     set(LWS_WITH_FILE_OPS ON CACHE INTERNAL "" FORCE)
+    # On Linux upstream lws defaults to building BOTH static + shared
+    # libs. The shared `libwebsockets.19.dylib` link step pulls in IDF's
+    # main archive looking for symbols, which fails on `_app_main`
+    # (defined in our example main.c, not in lws). The IDF link uses
+    # the static archive only — turn shared off.
+    set(LWS_WITH_SHARED OFF CACHE BOOL "" FORCE)
+    set(LWS_WITH_STATIC ON CACHE BOOL "" FORCE)
 endif()
 
 # Add libwebsockets as a subdirectory

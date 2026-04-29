@@ -9,3 +9,7 @@ __pycache__/
 *.pem
 *.key
 !**/cacert.pem
+
+# Generated locally for QEMU integration test runs; contains AWS creds.
+examples/webrtc_classic/sdkconfig.defaults.qemu.local
+examples/linux_test/.env

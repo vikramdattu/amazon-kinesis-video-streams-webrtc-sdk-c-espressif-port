@@ -125,45 +125,68 @@ Fixed by pre-pinning `LWS_MBEDTLS_LIBRARIES` / `LWS_MBEDTLS_INCLUDE_DIRS`
 to the IDF mbedtls component in `components/libwebsockets/CMakeLists.txt`
 before `add_subdirectory(libwebsockets)` is called.
 
-## 7b. linux_test: master crashes in `kvs_pc_send_message` while sending SDP_ANSWER
+## 7b. linux_test: master segfaults in `signalingMessageReceived` when ICE candidate arrives before SDP_OFFER
 
-**Status:** open. Linux-target only.
+**Status:** open. Linux-target only. Localized.
 
 End-to-end loop now runs as far as: master is connected to KVS WSS
-signaling, receives an `SDP_OFFER` from a Python aiortc viewer, parses
-ICE config, creates a peer connection, sets up media tracks, starts
-the global media sender threads. Then while building / sending the
-`SDP_ANSWER`, the master segfaults inside `kvs_pc_send_message`
-(stack unwound on macOS host):
+signaling and is receiving messages from a Python aiortc viewer.
+Per-run instrumentation (ESP_LOGI traces in
+`components/app_webrtc/src/app_webrtc.c::signalingMessageReceived`)
+shows the crash sequence is:
 
 ```
-0  segfault_handler
-1  _sigtramp
-2  __llvm_gcov_ctr.239
-3  kvs_pc_send_message + 1088
-4  signalingMessageReceived + 2972
-5  signalingMessageReceivedWrapper + 288
-6  kvsMessageReceivedCallback + 492
-7  receiveLwsMessageWrapper + 328
+sigMsgRecv: enter type=2 peer=py-viewer-XXXXXXXX payload_len=140
+sigMsgRecv: lock taken
+sigMsgRecv: hashTableContains -> peerConnectionFound=0 hash=0xNN
+ERROR: Segmentation Fault
+  signalingMessageReceived + 1848
+  signalingMessageReceivedWrapper + 288
+  kvsMessageReceivedCallback + 492
+  receiveLwsMessageWrapper + 328
 ```
 
-Likely causes (need to confirm):
+i.e. a `WEBRTC_MESSAGE_TYPE_ICE_CANDIDATE` (`type=2`) arrives **before**
+the matching `OFFER` for the same peer (`peerConnectionFound=FALSE`).
+The ICE-candidate branch (line 1347 in `app_webrtc.c`) walks into
+`getPendingMessageQueueForHash()` / `createMessageQueue()` /
+`stackQueueEnqueue()` / `MEMCALLOC(webrtc_message_t)` /
+`MEMCPY(payload)`. A NULL deref or bad pointer somewhere on that path
+is the cause.
 
-- aiortc's offer carries multiple DTLS fingerprints (sha-256 + sha-384
-  + sha-512). The KVS C SDK historically only reads the sha-256 line;
-  a mis-bounded copy of the longer sha-512 fingerprint into a fixed
-  buffer is a candidate.
-- Linux-target memory layout: stack is host-glibc managed, no
-  freertos task stack. Buffer overflows mask differently than on real
-  ESP targets.
+This race is real: aiortc's viewer sends the offer and the trickled
+ICE candidates back-to-back (`Sent SDP_OFFER`, then `Sent 12 trickled
+ICE candidate(s)` within a few ms). KVS signaling channel ordering
+isn't strictly preserved end-to-end, so the master can see one of the
+candidates first. The master logs only show the first crash — but at
+the same wall-clock the offer arrives in a separate WSS frame too.
+
+The viewer worked previously against ESP-target masters, so this
+suggests the Linux-target build of `signalingMessageReceived` is
+missing some init or has a struct-layout / alignment difference vs the
+ESP build, surfacing only when an out-of-order ICE candidate is
+processed first.
+
+**Earlier (less instrumented) crash signature:** `kvs_pc_send_message
++ 1088` ← `signalingMessageReceived + 2972`. Same function, deeper
+offset; that run hit the OFFER-first ordering, which dispatches
+through `pc_interface->send_message` → `kvs_handleOffer`. Both
+ordering races crash.
 
 **Investigation steps:**
 
-- Run with AddressSanitizer (rebuild with `-fsanitize=address`) and
-  capture the deref'd address.
-- Symbolicate `kvs_pc_send_message + 1088` against the KVS SDK source.
-- Compare against ESP target run logs of the same offer to confirm
-  Linux-only.
+- Build with `-fsanitize=address -fsanitize=undefined` and re-run.
+  Capture the actual deref'd address + which line.
+- Add ESP_LOGI traces between every line in the ICE_CANDIDATE branch
+  (started; reverted before pushing).
+- Cross-check `app_webrtc.c::signalingMessageReceived` for any field
+  that's only initialised on the OFFER path (`pAppWebRTCSession` is
+  NULL when peerConnectionFound=FALSE — confirm none of the deref'd
+  fields touch it before allocation).
+- Compare against an ESP-target run with the same aiortc viewer to
+  see if ESP-target accepts an out-of-order candidate without
+  crashing (it should — `peerConnectionFound=FALSE` falls into
+  the queue path).
 
 ## 7c. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
 

@@ -209,9 +209,13 @@ jobs:
           . /opt/esp/idf/export.sh
           python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
           which qemu-system-xtensa
-          # Python viewer + ffprobe + aws CLI for channel cleanup.
+          # Python viewer needs ffprobe + aws CLI for channel cleanup.
+          # libvpx / libsrtp / libopus are bundled by aiortc's PyAV
+          # wheel from PyPI, so we don't need the apt versions
+          # (libvpx7 isn't reliably present in the espressif/idf
+          # image's apt sources anyway).
           apt-get update && apt-get install -y --no-install-recommends \
-              ffmpeg libopus0 libvpx7 libsrtp2-1 awscli
+              ffmpeg awscli
           pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
 
       - name: Generate sdkconfig overlay with AWS creds

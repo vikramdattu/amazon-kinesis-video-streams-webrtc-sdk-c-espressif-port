@@ -10,16 +10,30 @@
 # SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.defaults.qemu"
 # before `idf.py build`.
 
-# Disable SPIRAM entirely for QEMU. The emulated ssi_psram in
-# qemu-xtensa exposes a 30 MB pool that grabs the entire flash-mmap
-# vaddr range, so subsequent esp_mmu_map() calls (used by partition
-# loading) fail with "no such vaddr range" and the app aborts. Real
-# ESP-IDF dev / CI on hardware uses Octal PSRAM via the .esp32s3
-# overlay; the .qemu overlay turns it off so the app can boot.
+# SPIRAM in QUAD mode + heap-only (no vaddr memmap). The earlier hang
+# was caused by SPIRAM_USE_MEMMAP grabbing 30 MB of vaddr (qemu's
+# emulated ssi_psram size mismatches real S3); SPIRAM_USE_MALLOC
+# routes PSRAM through heap_caps without pre-mapping. Without ANY
+# PSRAM webrtc_classic's peer-connection setup OOMs (internal RAM
+# alone is ~250 KB).
+# Disable PSRAM in QEMU. Ideally we'd cap the emulated PSRAM at 8 MB
+# (matching real S3-WROOM-1U-N16R8) via
+# `-global driver=ssi_psram,property=size_mbytes,value=8`, but that
+# global is silently ignored by the qemu-xtensa esp_develop_9.2.2
+# build — the ssi_psram device always reports 32 MB. IDF's PSRAM
+# driver then maps ~30 MB into the cache MMU's vaddr range at boot,
+# leaving < 2 MB for flash mmap, which is smaller than our 2.4 MB
+# application image. Result: ESP_ERR_NOT_FOUND on partition load,
+# abort before app_main returns.
+#
+# Without PSRAM, internal heap is ~250 KB. webrtc_classic's
+# peer-connection setup OOMs (KVS allocates ~MB-scale pools); that's
+# why the QEMU job's success bar today is just "Signaling Connected"
+# rather than full media round-trip. Tracked as a follow-up.
 CONFIG_ESP32S3_SPIRAM_SUPPORT=n
 CONFIG_SPIRAM=n
 CONFIG_SPIRAM_MODE_OCT=n
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=
+CONFIG_SPIRAM_USE_MEMMAP=n
 CONFIG_SPIRAM_USE_MALLOC=n
 
 # USB Serial JTAG isn't emulated in qemu-xtensa; without UART console
@@ -53,6 +67,13 @@ CONFIG_LOG_DEFAULT_LEVEL=4
 CONFIG_APP_NETWORK_USE_OPENETH=y
 CONFIG_APP_NETWORK_PROV_BLE=n
 CONFIG_ETH_USE_OPENETH=y
+
+# Disable BLE entirely (NimBLE adds ~500 KB; we use Ethernet, no
+# provisioning needed). Frees vaddr for flash mmap when PSRAM isn't
+# emulated correctly under QEMU.
+CONFIG_BT_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=n
+CONFIG_BT_CONTROLLER_ENABLED=n
 
 # Provide WiFi-style fallback creds in case the Kconfig-fallback path
 # in app_wifi_prov_init() runs (it shouldn't with USE_OPENETH=y, but

@@ -269,7 +269,13 @@ jobs:
           . /opt/esp/idf/export.sh
           mkdir -p "$(dirname "$OUT_PATH")"
           # Start QEMU as background; serial → qemu_serial.log.
-          ( idf.py qemu --qemu-extra-args="-no-reboot" \
+          # `-global driver=ssi_psram,property=size_mbytes,value=8`
+          # caps emulated PSRAM at 8 MB (matches real S3-WROOM-1U-N16R8).
+          # Without this, the qemu ssi_psram device defaults to 32 MB
+          # which exceeds the S3 cache MMU's vaddr range — flash mmap
+          # then has no entries available and the partition table
+          # subsystem aborts on app_main entry.
+          ( idf.py qemu --qemu-extra-args="-no-reboot -global driver=ssi_psram,property=size_mbytes,value=8" \
               > qemu_serial.log 2>&1 & echo $! > qemu.pid )
           # Give the firmware time to boot, get IP, sync time, and
           # reach the signaling-init retry loop.

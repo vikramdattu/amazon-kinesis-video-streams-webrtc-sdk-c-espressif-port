@@ -82,6 +82,18 @@ CONFIG_BT_CONTROLLER_ENABLED=n
 CONFIG_ESP_WIFI_SSID="qemu"
 CONFIG_ESP_WIFI_PASSWORD="qemu1234"
 
+# Force small heap allocations into internal DRAM. The IDF OpenETH
+# driver allocates its `emac_opencores_t` state via plain `calloc`,
+# and its ISR (correctly IRAM_ATTR) dereferences `emac->rx_task_hdl`
+# at every RX interrupt. If `emac` lands in PSRAM and an ISR fires
+# during a flash-op cache-disable window, the load is a "cached
+# memory accessed while cache disabled" → Cache Error panic.
+# Setting ALWAYSINTERNAL=512 makes anything <512 B go to DRAM, which
+# captures emac, mbedtls scratch, ESP-TLS session, etc.
+# TODO: drop this when the IDF ETH driver explicitly allocates the
+# mac state via heap_caps_*(MALLOC_CAP_INTERNAL).
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
+
 # Stream H.264 frames from SPIFFS (samples/frame-*.h264) instead of
 # from the camera. QEMU has no camera; the file-based capture path in
 # media_stream gives the WebRTC pipeline real frames to send so the

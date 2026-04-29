@@ -570,3 +570,159 @@ jobs:
             qemu_recording.mkv
             ffprobe.txt
           retention-days: 7
+
+  # IDF Linux-target variant: drives the same SDK stack
+  # (app_webrtc + kvs_signaling + kvs_webrtc) as a master peer
+  # entirely on the runner host — no QEMU, no slirp NAT. Sidesteps
+  # every QEMU networking limitation that blocks media flow on the
+  # esp32 / esp32s3 jobs above.
+  linux_test_kvs:
+    name: "linux_test (IDF Linux target) | KVS master"
+    runs-on: ubuntu-22.04
+    container: espressif/idf:release-v5.5
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
+    timeout-minutes: 30
+
+    env:
+      KVS_CHANNEL_NAME: ${{ secrets.KVS_QEMU_CHANNEL_NAME && format('{0}-linux', secrets.KVS_QEMU_CHANNEL_NAME) || format('espressif-port-linux-{0}', github.run_id) }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+      TEST_DURATION_SEC: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify AWS creds
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        id: creds
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "::warning::AWS_ACCESS_KEY_ID not set — skipping linux_test integration test."
+            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Apply SDK patches
+        shell: bash
+        run: |
+          git config --global --add safe.directory "*"
+          cd amazon-kinesis-video-streams-webrtc-sdk-c
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+          git am ../patches/*.patch
+
+      - name: Install Python viewer deps + ffmpeg
+        if: steps.creds.outputs.skip != '1'
+        shell: bash
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends ffmpeg
+          pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
+
+      - name: Build linux_test (IDF Linux target)
+        if: steps.creds.outputs.skip != '1'
+        env:
+          KVS_SDK_PATH: ${{ github.workspace }}
+        shell: bash
+        run: |
+          cd examples/linux_test
+          . /opt/esp/idf/export.sh
+          idf.py --preview set-target linux
+          idf.py build
+
+      - name: Run linux_test master + Python viewer
+        if: steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          export OUT_PATH="$GITHUB_WORKSPACE/linux_recording.mkv"
+          export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
+          export KVS_FRAMES_DIR="$GITHUB_WORKSPACE/amazon-kinesis-video-streams-webrtc-sdk-c/samples"
+          cd examples/linux_test
+          . /opt/esp/idf/export.sh
+          # Start the master in background. linux_test's app_main loops
+          # for TEST_DURATION_SEC then exit(0)s; we let the viewer race
+          # it via timeout.
+          ( ./build/linux_test.elf > linux_master.log 2>&1 & echo $! > master.pid )
+          # Give the master time to set up signaling, gather candidates.
+          sleep 15
+          echo "::group::Master boot snippet"
+          tail -40 linux_master.log
+          echo "::endgroup::"
+          python -u "${GITHUB_WORKSPACE}/tests/docker/python_viewer/viewer.py" 2>&1 | tee "$LOG_PATH" &
+          VIEWER_PID=$!
+          wait $VIEWER_PID || true
+          if [ -f master.pid ]; then kill -TERM $(cat master.pid) 2>/dev/null || true; fi
+          sleep 2
+          pkill -KILL -f linux_test.elf 2>/dev/null || true
+
+      - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
+        if: steps.creds.outputs.skip != '1'
+        shell: bash
+        run: |
+          MKV="${GITHUB_WORKSPACE}/linux_recording.mkv"
+          if [ ! -s "$MKV" ]; then
+            echo "::error::linux_recording.mkv missing or empty"
+            exit 1
+          fi
+          ffprobe -v error -show_streams -count_packets "$MKV" > ffprobe.txt
+          echo "--- ffprobe ---" ; cat ffprobe.txt ; echo "----------------"
+
+          VID_CODEC=$(awk -F= '/codec_type=video/{vid=1} vid && /codec_name=/{print $2; exit}' ffprobe.txt)
+          AUD_CODEC=$(awk -F= '/codec_type=audio/{aud=1} aud && /codec_name=/{print $2; exit}' ffprobe.txt)
+          VID_PACKETS=$(awk -F= '/codec_type=video/{vid=1} vid && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
+          AUD_PACKETS=$(awk -F= '/codec_type=audio/{aud=1} aud && /nb_read_packets=/{print $2; exit}' ffprobe.txt)
+
+          echo "video codec=${VID_CODEC:-none} packets=${VID_PACKETS:-0}"
+          echo "audio codec=${AUD_CODEC:-none} packets=${AUD_PACKETS:-0}"
+
+          ok=1
+          [ "$VID_CODEC" = "h264" ] || { echo "::error::video codec is '${VID_CODEC:-none}', expected h264"; ok=0; }
+          [ "$AUD_CODEC" = "opus" ] || { echo "::error::audio codec is '${AUD_CODEC:-none}', expected opus"; ok=0; }
+          [ "${VID_PACKETS:-0}" -ge 30 ] || { echo "::error::video packets ${VID_PACKETS:-0} < 30"; ok=0; }
+          [ "${AUD_PACKETS:-0}" -ge 30 ] || { echo "::error::audio packets ${AUD_PACKETS:-0} < 30"; ok=0; }
+
+          [ "$ok" = "1" ] || exit 1
+          echo "PASS — H.264 + OPUS round-trip verified end-to-end (linux_test master)."
+
+      - name: Delete KVS channel (inline boto3)
+        if: always() && steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          python <<'PY'
+          import os, boto3
+          from botocore.exceptions import ClientError
+          ch = os.environ["KVS_CHANNEL_NAME"]
+          kvs = boto3.client("kinesisvideo", region_name=os.environ["AWS_DEFAULT_REGION"])
+          try:
+              info = kvs.describe_signaling_channel(ChannelName=ch)["ChannelInfo"]
+              kvs.delete_signaling_channel(ChannelARN=info["ChannelARN"],
+                                           CurrentVersion=info["Version"])
+              print(f"deleted {ch}")
+          except ClientError as e:
+              if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                  print(f"{ch} already gone")
+              else:
+                  print(f"delete error (non-fatal): {e}")
+          PY
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-kvs-${{ github.run_id }}
+          path: |
+            examples/linux_test/linux_master.log
+            python_viewer.log
+            linux_recording.mkv
+            ffprobe.txt
+          retention-days: 7

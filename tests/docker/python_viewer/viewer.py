@@ -158,11 +158,34 @@ async def run() -> int:
     async def on_ice_state():
         log.info("ICE connection state: %s", pc.iceConnectionState)
 
-    # Generate offer + wait for non-trickle ICE gathering to complete.
-    await pc.setLocalDescription(await pc.createOffer())
-    while pc.iceGatheringState != "complete":
+    # Build the offer with TRICKLE ICE advertised. Without
+    # `a=ice-options:trickle` in the offer, the KVS-master path
+    # (kvs_webrtc/IceAgent on the device) treats the session as
+    # non-trickle and waits for full local-side ICE gathering before
+    # emitting the SDP_ANSWER. If TURN allocation fails (common in
+    # QEMU+slirp), gathering effectively never "completes" with a
+    # success state, so the answer is never sent and the viewer
+    # stalls. Borrowed pattern from esp-rainmaker-cli's KVS viewer.
+    offer = await pc.createOffer()
+    if "a=ice-options:trickle" not in offer.sdp:
+        sep = "\r\n" if "\r\n" in offer.sdp else "\n"
+        sdp_lines = offer.sdp.split(sep)
+        insert_idx = next(
+            (i for i, line in enumerate(sdp_lines) if line.startswith("m=")),
+            len(sdp_lines),
+        )
+        sdp_lines.insert(insert_idx, "a=ice-options:trickle")
+        offer = RTCSessionDescription(sdp=sep.join(sdp_lines), type=offer.type)
+
+    await pc.setLocalDescription(offer)
+
+    # Wait briefly for ICE gathering — we'll trickle whatever lands
+    # in localDescription.sdp afterwards.
+    deadline_gather = time.monotonic() + 2.0
+    while pc.iceGatheringState != "complete" and time.monotonic() < deadline_gather:
         await asyncio.sleep(0.05)
-    log.info("ICE gathering complete; opening WSS to %s", endpoints["WSS"])
+    log.info("ICE gathering state=%s; opening WSS to %s",
+             pc.iceGatheringState, endpoints["WSS"])
 
     async with websockets.connect(signed_wss, max_size=2**20) as ws:
         offer_payload = {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp}
@@ -174,6 +197,37 @@ async def run() -> int:
             "correlationId": uuid.uuid4().hex,
         }))
         log.info("Sent SDP_OFFER to master")
+
+        # Trickle: parse candidates out of localDescription.sdp and
+        # send each as an ICE_CANDIDATE message. aiortc populates
+        # candidates inline in the SDP after gathering instead of
+        # firing the icecandidate event reliably.
+        local_sdp = pc.localDescription.sdp
+        sep = "\r\n" if "\r\n" in local_sdp else "\n"
+        current_mid = None
+        mline_index = -1
+        sent_candidates = 0
+        for line in local_sdp.split(sep):
+            if line.startswith("m="):
+                mline_index += 1
+                current_mid = None
+            elif line.startswith("a=mid:"):
+                current_mid = line.split(":", 1)[1].strip()
+            elif line.startswith("a=candidate:"):
+                cand_str = line[2:]  # strip "a="
+                payload = {
+                    "candidate": cand_str,
+                    "sdpMid": current_mid if current_mid is not None else str(max(mline_index, 0)),
+                    "sdpMLineIndex": max(mline_index, 0),
+                }
+                await ws.send(json.dumps({
+                    "action": "ICE_CANDIDATE",
+                    "messagePayload": base64.b64encode(json.dumps(payload).encode()).decode(),
+                    "correlationId": uuid.uuid4().hex,
+                    "recipientClientId": "MASTER",
+                }))
+                sent_candidates += 1
+        log.info("Sent %d trickled ICE candidate(s) to master", sent_candidates)
 
         await recorder.start()
         deadline = time.monotonic() + DURATION

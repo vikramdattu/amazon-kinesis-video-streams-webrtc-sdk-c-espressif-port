@@ -1207,8 +1207,11 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
                 /* Progressive ICE Optimization:
                  * Trigger non-blocking ICE server refresh using progressive mechanism
                  * This gets STUN servers immediately and triggers background TURN fetching
+                 * (when useTurn is enabled). Honour the configured policy so
+                 * `app_webrtc_set_ice_config(..., use_turn=false)` actually
+                 * suppresses TURN fetching.
                  */
-                app_webrtc_trigger_progressive_ice("new session", true);
+                app_webrtc_trigger_progressive_ice("new session", pSampleConfiguration->useTurn);
 
                 // Use pluggable interface
                 void* session_handle = NULL;
@@ -1302,9 +1305,10 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
                       pWebRtcMessage->peer_client_id);
 
                 /* Progressive ICE Optimization:
-                 * Trigger non-blocking ICE server refresh for answer processing
+                 * Trigger non-blocking ICE server refresh for answer processing.
+                 * Honour the configured useTurn policy.
                  */
-                app_webrtc_trigger_progressive_ice("answer processing", true);
+                app_webrtc_trigger_progressive_ice("answer processing", pSampleConfiguration->useTurn);
 
                 // Use the message directly since it's already in the right format
                 message_status = pc_interface->send_message(pAppWebRTCSession->interface_session_handle, pWebRtcMessage);
@@ -2135,9 +2139,10 @@ int app_webrtc_trigger_offer(char *pPeerId)
         }
 
         /* Progressive ICE Optimization:
-         * Trigger non-blocking ICE server refresh for offer creation
+         * Trigger non-blocking ICE server refresh for offer creation.
+         * Honour the configured useTurn policy.
          */
-        app_webrtc_trigger_progressive_ice("offer creation", true);
+        app_webrtc_trigger_progressive_ice("offer creation", pSampleConfiguration->useTurn);
 
         // Use pluggable interface
         void* session_handle = NULL;

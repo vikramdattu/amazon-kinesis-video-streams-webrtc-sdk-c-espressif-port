@@ -24,24 +24,41 @@ permissions in the region you point at.
 ```bash
 cd tests/docker
 cp .env.example .env
-$EDITOR .env             # fill in AWS creds + KVS_CHANNEL_NAME
-./run_test.sh
+$EDITOR .env                    # fill in AWS creds + KVS_CHANNEL_NAME
+./run_test.sh                   # default — C master + C viewer
+./run_test.sh --python          # master + aiortc Python viewer (records MKV)
+./run_test.sh --all             # master + both viewers
 ```
 
-The first build pulls the upstream KVS deps (websockets, openssl, srtp,
-log4cplus) and takes ~10 minutes. Subsequent builds reuse the cached
-layer and are fast.
+The first C-image build pulls the upstream KVS deps (websockets,
+openssl, srtp, log4cplus) and takes ~10 minutes. The Python image
+builds in ~1 minute. Subsequent builds reuse the cached layer.
 
-Logs land in `out/master.log` and `out/viewer.log` for inspection.
+Outputs land in `out/`:
+- `master.log` — C master log
+- `viewer.log` — C viewer log (default mode)
+- `python_viewer.log`, `python_viewer.mkv` — Python viewer log + recording
+
+## Two verification paths
+
+The harness ships two viewers because they prove different things:
+
+| Mode | Viewer | Verification | What it proves |
+|------|--------|--------------|----------------|
+| `--c` (default) | upstream `kvsWebrtcClientViewer` | log-grep over `viewer.log` | interop with the AWS C SDK — same code AWS uses for their own tests |
+| `--python` | aiortc-based | `ffprobe` on `python_viewer.mkv` | media actually decodes; codec=h264; ≥30 frames |
+| `--all` | both | both | safest — but slowest first build |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Single image used by both services. Builds upstream KVS samples from the vendored submodule. |
-| `docker-compose.yml` | Pair of services sharing the same image; `command:` selects master vs viewer. |
-| `run_test.sh` | Loads `.env`, brings the stack up, tears it down, runs `verify.sh`. |
-| `verify.sh` | Pure log-grep checks (signaling/ICE/DTLS markers). |
+| `Dockerfile` | C master+viewer image. Builds upstream KVS samples from the vendored submodule. |
+| `python_viewer/Dockerfile` | aiortc-based Python viewer image. |
+| `python_viewer/viewer.py` | KVS signaling + aiortc peer + MediaRecorder. ~200 lines. |
+| `docker-compose.yml` | Master + both viewer flavours. C is default; `--profile python` enables the Python viewer. |
+| `run_test.sh` | `--c` / `--python` / `--all` mode switcher. |
+| `verify.sh` | Log-grep + ffprobe checks; mode-aware. |
 | `.env.example` | Placeholder env file. Real `.env` is gitignored. |
 
 ## CI
@@ -52,11 +69,7 @@ command sequence.
 
 ## Limitations / future work
 
-- **Frame-count and ffprobe verification:** the upstream viewer doesn't
-  dump received H.264 to disk. A small viewer-side patch (or swapping in
-  `kvsWebrtcClientViewerGstSample` with a `filesink`) would let us run
-  `ffprobe -show_streams out/master.mkv` for stricter validation. Phase 2.
-- **ESP32-S3 in QEMU:** see `Dockerfile.s3-build` (Phase 2 tier 1) — boot
-  smoke only today.
-- **Browser+Playwright variant:** deferred. The C-sample viewer is
-  enough to prove the SDK works end-to-end.
+- **ESP32-S3 in QEMU:** see `Dockerfile.s3-build` (Phase 2 tier 1) — build
+  smoke only today; QEMU networked boot deferred.
+- **Browser+Playwright variant:** deferred. The two viewers above (C +
+  Python) cover the interop and recording axes.

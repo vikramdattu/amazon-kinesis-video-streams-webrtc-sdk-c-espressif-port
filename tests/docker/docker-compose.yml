@@ -38,6 +38,8 @@ services:
         if [ "$$rc" = "124" ]; then exit 0; else exit $$rc; fi
 
   viewer:
+    # No profile → runs by default. The Python variant below is opt-in
+    # via `--profile python`.
     image: kvs-integration:latest
     depends_on:
       master:
@@ -68,3 +70,35 @@ services:
           | tee /out/viewer.log
         rc=$$?
         if [ "$$rc" = "124" ]; then exit 0; else exit $$rc; fi
+
+  # Optional: aiortc-based viewer that records the inbound stream to
+  # /out/python_viewer.mkv so verify.sh can run real ffprobe checks.
+  # Activate with `docker compose --profile python up` (or via run_test.sh
+  # --python). Faster build than the C viewer (~1 min vs ~10 min).
+  python_viewer:
+    profiles: ["python"]
+    build:
+      context: ../..
+      dockerfile: tests/docker/python_viewer/Dockerfile
+    image: kvs-python-viewer:latest
+    depends_on:
+      master:
+        condition: service_started
+    environment:
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?must be set in .env}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?must be set in .env}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      KVS_CHANNEL_NAME: ${KVS_CHANNEL_NAME:?must be set in .env}
+      TEST_DURATION_SEC: ${TEST_DURATION_SEC:-45}
+      OUT_PATH: /out/python_viewer.mkv
+    volumes:
+      - ./out:/out
+    # Wrap so we still tee a log file alongside the MKV recording.
+    command:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        sleep 5
+        python /app/viewer.py 2>&1 | tee /out/python_viewer.log

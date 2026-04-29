@@ -66,6 +66,57 @@ jobs:
           path: tests/docker/out/
           retention-days: 7
 
+  python_loopback:
+    name: "Linux loopback | aiortc Python viewer + ffprobe"
+    runs-on: ubuntu-22.04
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
+    # First-pass — leave non-blocking until soaked.
+    continue-on-error: true
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify AWS creds
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        id: creds
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "::warning::AWS_ACCESS_KEY_ID secret not set — skipping python integration test."
+            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Materialise .env
+        if: steps.creds.outputs.skip != '1'
+        run: |
+          # Distinct channel name from the C-viewer job to avoid collisions
+          # if both run concurrently.
+          cat > tests/docker/.env <<EOF
+          AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
+          KVS_CHANNEL_NAME=${{ secrets.KVS_CHANNEL_NAME || format('espressif-port-ci-py-{0}', github.run_id) }}
+          TEST_DURATION_SEC=45
+          AWS_KVS_LOG_LEVEL=3
+          EOF
+
+      - name: Run python-viewer test
+        if: steps.creds.outputs.skip != '1'
+        run: ./tests/docker/run_test.sh --python
+
+      - name: Upload artifacts (logs + MKV)
+        if: always() && steps.creds.outputs.skip != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-viewer-${{ github.run_id }}
+          path: tests/docker/out/
+          retention-days: 7
+
   esp32s3_build_smoke:
     name: "esp32s3 build smoke | webrtc_classic"
     runs-on: ubuntu-22.04

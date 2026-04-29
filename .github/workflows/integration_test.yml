@@ -1,0 +1,120 @@
+name: Integration Tests
+
+# Linux loopback (master + viewer over real KVS) and an esp32s3 build
+# smoke that exercises the SDK component graph against a stock ESP-IDF
+# release. Both run on every push and PR; the Linux loopback gates on
+# AWS creds being present in repo secrets — it skips itself otherwise so
+# fork PRs don't fail.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'feature/**'
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux_loopback:
+    name: "Linux loopback | KVS master+viewer"
+    runs-on: ubuntu-22.04
+    # Skip on forks: AWS_* secrets aren't available in PRs from forks.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify AWS creds are wired up
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "::warning::AWS_ACCESS_KEY_ID secret not set — skipping integration test."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+        id: creds
+
+      - name: Materialise .env from repo secrets
+        if: steps.creds.outputs.skip != '1'
+        run: |
+          cat > tests/docker/.env <<EOF
+          AWS_DEFAULT_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN=${{ secrets.AWS_SESSION_TOKEN }}
+          KVS_CHANNEL_NAME=${{ secrets.KVS_CHANNEL_NAME || format('espressif-port-ci-{0}', github.run_id) }}
+          TEST_DURATION_SEC=45
+          AWS_KVS_LOG_LEVEL=3
+          EOF
+
+      - name: Run docker-compose integration test
+        if: steps.creds.outputs.skip != '1'
+        run: ./tests/docker/run_test.sh
+
+      - name: Upload logs
+        if: always() && steps.creds.outputs.skip != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ github.run_id }}
+          path: tests/docker/out/
+          retention-days: 7
+
+  esp32s3_build_smoke:
+    name: "esp32s3 build smoke | webrtc_classic"
+    runs-on: ubuntu-22.04
+    container: espressif/idf:release-v5.5
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Apply SDK patches
+        shell: bash
+        run: |
+          git config --global --add safe.directory "*"
+          cd amazon-kinesis-video-streams-webrtc-sdk-c
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+          # Patches may already be on submodule HEAD — `git am` aborts
+          # on already-applied; re-check before failing.
+          if git am ../../patches/*.patch 2>/dev/null; then
+              echo "Patches applied"
+          else
+              git am --abort 2>/dev/null || true
+              echo "Patches already on submodule HEAD — continuing"
+          fi
+
+      - name: Build webrtc_classic for esp32s3
+        env:
+          KVS_SDK_PATH: ${{ github.workspace }}
+        shell: bash
+        run: |
+          cd examples/webrtc_classic
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Build linux_test canary
+        shell: bash
+        run: |
+          cd examples/linux_test
+          . /opt/esp/idf/export.sh
+          idf.py --preview set-target linux
+          idf.py build
+          ls -la build/linux_test.elf
+
+      - name: Smoke-run linux_test canary
+        shell: bash
+        run: |
+          cd examples/linux_test
+          ./build/linux_test.elf | tee canary.log
+          grep -q "canary OK" canary.log

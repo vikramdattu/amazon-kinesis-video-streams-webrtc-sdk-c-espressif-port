@@ -19,16 +19,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "esp_work_queue.h"
 #include "esp_log.h"
 
 static const char *TAG = "linux_test";
 
+static volatile int s_canary_done = 0;
+
 static void canary_task(void *priv)
 {
     (void)priv;
     ESP_LOGI(TAG, "esp_work_queue task ran on Linux target");
+    s_canary_done = 1;
 }
 
 void app_main(void)
@@ -59,5 +63,16 @@ void app_main(void)
         return;
     }
 
+    /* Wait for the queued task to actually run before declaring success. */
+    for (int i = 0; i < 50 && !s_canary_done; ++i) {
+        usleep(20 * 1000);
+    }
+    if (!s_canary_done) {
+        ESP_LOGE(TAG, "canary_task never ran");
+        exit(1);
+    }
     ESP_LOGI(TAG, "canary OK");
+    /* Linux IDF target keeps FreeRTOS spinning otherwise — exit so the
+     * binary terminates cleanly under CI. */
+    exit(0);
 }

@@ -150,6 +150,31 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DENABLE_STREAMING
     -DKVS_USE_PLATFORM_TYPES
     -DKVS_PLAT_ESP_FREERTOS
+    # ABI parity for `SignalingMessage`. Upstream KVS SDK's
+    # `webrtcclient/Include.h` defines that struct two different ways
+    # depending on whether `DYNAMIC_SIGNALING_PAYLOAD` is set:
+    #
+    #   #ifdef DYNAMIC_SIGNALING_PAYLOAD
+    #     PCHAR payload;                       /* pointer */
+    #   #else
+    #     CHAR payload[MAX_SIGNALING_MESSAGE_LEN + 1];  /* 18 KB inline */
+    #   #endif
+    #
+    # `kvs_utils/include/common_defs.h` declares the macro, so any TU
+    # that includes `common_defs.h` first (our `kvs_signaling`,
+    # `kvs_webrtc`, `app_webrtc` sources) sees the pointer layout. The
+    # upstream KVS SDK source files in `src/source/...` only `#include
+    # "../Include_i.h"` → straight to the upstream `Include.h` without
+    # `common_defs.h`, so they see the inline-array layout. Same struct,
+    # two layouts in different translation units → KVS SDK writes the
+    # incoming JSON into `payload[0..N]`, which lands on top of the
+    # `payload` *pointer field* the consumer reads, giving a "pointer"
+    # whose bytes spell `{"candi...` and segfaulting in
+    # `deserializeSessionDescriptionInit` on first deref.
+    #
+    # Forcing the macro PUBLICly here pins the layout to the pointer
+    # form for every TU compiled against this component.
+    -DDYNAMIC_SIGNALING_PAYLOAD=1
 )
 
 # Add definitions for usrsctp. SCTP_USE_LWIP / SCTP_USE_RTOS / HAVE_SCONN_LEN

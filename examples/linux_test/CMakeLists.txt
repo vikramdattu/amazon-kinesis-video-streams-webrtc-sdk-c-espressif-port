@@ -29,3 +29,14 @@ project(linux_test)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
     idf_build_set_property(COMPILE_OPTIONS "-Wno-unknown-warning-option" APPEND)
 endif()
+
+# Optional AddressSanitizer / UBSan for debugging. Off by default; enable
+# with `idf.py -DLINUX_TEST_ASAN=ON build`. Linker flags need to be set on
+# the executable target, which doesn't exist yet at this point — append to
+# the global C/CXX flags instead so cmake passes them through.
+option(LINUX_TEST_ASAN "Build linux_test with AddressSanitizer + UBSan" OFF)
+if(LINUX_TEST_ASAN)
+    set(_asan_flags "-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -O1 -g")
+    idf_build_set_property(COMPILE_OPTIONS "-fsanitize=address;-fsanitize=undefined;-fno-omit-frame-pointer;-fno-sanitize-recover=all" APPEND)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${_asan_flags}")
+endif()

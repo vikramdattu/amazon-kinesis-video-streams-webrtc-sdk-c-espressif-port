@@ -1954,7 +1954,16 @@ WEBRTC_STATUS app_webrtc_run(void)
     }
 
     if (task_stack == NULL) {
-        task_stack = heap_caps_calloc_prefer(1, WEBRTC_TASK_STACK_SIZE, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        /* xTaskCreateStatic takes usStackDepth in stack *words*; the
+         * static buffer must hold `usStackDepth * sizeof(StackType_t)`
+         * bytes. ESP-IDF's xtensa/riscv FreeRTOS port defines
+         * `StackType_t = uint8_t` so byte-sized allocations work. The
+         * IDF Linux target uses upstream FreeRTOS Linux port where
+         * `StackType_t = unsigned long` (8 bytes on a 64-bit host); a
+         * byte-sized buffer is 8× too small and `prvInitialiseNewTask`
+         * runs `memset` past the end, silently corrupting the heap. */
+        const size_t stack_bytes = (size_t) WEBRTC_TASK_STACK_SIZE * sizeof(StackType_t);
+        task_stack = heap_caps_calloc_prefer(1, stack_bytes, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
 
     if (!task_buffer || !task_stack) {

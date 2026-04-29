@@ -75,6 +75,16 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DENABLE_STREAMING
     -DKVS_USE_PLATFORM_TYPES
     -DKVS_PLAT_ESP_FREERTOS
+    # Must match the kvs_webrtc component's setting — see the long
+    # comment there. The KVS SDK signaling-layer source files
+    # (`Signaling.c`, `LwsApiCalls.c`, `Client.c`, `StateMachine.c`,
+    # `FileCache.c`, `ChannelInfo.c`) are compiled here, and they all
+    # touch `SignalingMessage`. Without this macro they see the inline
+    # 18 KB `payload[]` layout while the rest of our code (which
+    # picks the macro up from `kvs_utils/include/common_defs.h`) sees
+    # the pointer layout — same struct, two ABIs, instant heap
+    # corruption on the first received message.
+    -DDYNAMIC_SIGNALING_PAYLOAD=1
 )
 
 # Suppress warnings for KVS code

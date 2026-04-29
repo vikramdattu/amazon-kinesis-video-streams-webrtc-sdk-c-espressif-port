@@ -1,0 +1,73 @@
+From 7d38cd5651359c7854230e22216ad08d62060011 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 30 Apr 2026 02:40:45 +0530
+Subject: [PATCH] Signaling: fix payload pointer clobber under
+ DYNAMIC_SIGNALING_PAYLOAD
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When `DYNAMIC_SIGNALING_PAYLOAD` is enabled the `payload` field of
+`SignalingMessage` is a `PCHAR` pointing at a heap buffer the caller
+(`receiveLwsMessage` line 2415) allocates immediately before invoking
+`parseSignalingMessage`. The latter unconditionally
+`MEMSET(pReceivedSignalingMessage, 0x00, ...)` zeroes that pointer,
+and the subsequent base64Decode dereferences NULL. Save / restore the
+pointer across the MEMSET in the dynamic-payload build.
+
+Same call site also computed the output buffer cap as
+`SIZEOF(payload)`, which evaluates to `sizeof(PCHAR) == 8` on 64-bit
+hosts — passing 8 as the cap to base64Decode either truncates or
+(under instrumented builds) confuses the decoder. Use
+`MAX_SIGNALING_MESSAGE_LEN + 1` (the size of the heap buffer the
+caller actually allocated) when the macro is on.
+---
+ src/source/Signaling/LwsApiCalls.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/source/Signaling/LwsApiCalls.c b/src/source/Signaling/LwsApiCalls.c
+index 6a2d51c1f8..de49d9bdf5 100644
+--- a/src/source/Signaling/LwsApiCalls.c
++++ b/src/source/Signaling/LwsApiCalls.c
+@@ -2306,7 +2306,20 @@ STATUS parseSignalingMessage(PCHAR pMessage, UINT32 messageLen, PReceivedSignali
+     CHK(pMessage != NULL && pReceivedSignalingMessage != NULL, STATUS_NULL_ARG);
+     CHK(messageLen <= MAX_SIGNALING_MESSAGE_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
+ 
++#ifdef DYNAMIC_SIGNALING_PAYLOAD
++    /* When DYNAMIC_SIGNALING_PAYLOAD is set, `signalingMessage.payload` is
++     * a heap-allocated `PCHAR`, not an inline array. The caller
++     * (`receiveLwsMessage`) MEMCALLOCs that buffer right before passing
++     * the struct into us, so the unconditional MEMSET below would zero
++     * the pointer — and parsing then dereferences NULL. Save / restore
++     * across the MEMSET so the pre-allocated buffer survives. The
++     * inline-array build (no macro) doesn't have this issue. */
++    PCHAR savedPayload = pReceivedSignalingMessage->signalingMessage.payload;
++    MEMSET(pReceivedSignalingMessage, 0x00, SIZEOF(ReceivedSignalingMessage));
++    pReceivedSignalingMessage->signalingMessage.payload = savedPayload;
++#else
+     MEMSET(pReceivedSignalingMessage, 0x00, SIZEOF(ReceivedSignalingMessage));
++#endif
+     pReceivedSignalingMessage->signalingMessage.messageType = SIGNALING_MESSAGE_TYPE_UNKNOWN;
+ 
+     jsmn_init(&parser);
+@@ -2331,7 +2344,17 @@ STATUS parseSignalingMessage(PCHAR pMessage, UINT32 messageLen, PReceivedSignali
+         } else if (compareJsonString(pMessage, &tokens[i], JSMN_STRING, (PCHAR) "messagePayload")) {
+             strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
+             CHK(strLen <= MAX_SIGNALING_MESSAGE_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
++#ifdef DYNAMIC_SIGNALING_PAYLOAD
++            /* `payload` is a `PCHAR` (8 bytes on 64-bit hosts) — the
++             * heap allocation is `MAX_SIGNALING_MESSAGE_LEN + 1` bytes
++             * (see receiveLwsMessage's call site). Pass that as the
++             * output buffer cap; otherwise base64Decode gets a cap of 8
++             * and either truncates or writes past the (8-byte) sizeof
++             * the field. */
++            outLen = MAX_SIGNALING_MESSAGE_LEN + 1;
++#else
+             outLen = SIZEOF(pReceivedSignalingMessage->signalingMessage.payload);
++#endif
+             // Base64 method will set outLen <= original input outLen
+             CHK_STATUS(base64Decode(pMessage + tokens[i + 1].start, strLen, (PBYTE) (pReceivedSignalingMessage->signalingMessage.payload), &outLen));
+ 
+-- 
+2.39.5 (Apple Git-154)
+

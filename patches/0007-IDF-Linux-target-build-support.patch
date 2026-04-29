@@ -1,3 +1,25 @@
+From 1dd260bea294c73a2192af732a311489064f6941 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 30 Apr 2026 02:41:07 +0530
+Subject: [PATCH] IDF Linux target build support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Network.c: gate the ESP-IDF code path on `\!CONFIG_IDF_TARGET_LINUX`
+  via a new `KVS_NETWORK_USE_ESP_IDF` macro. The Linux IDF target sets
+  `CONFIG_IDF_CMAKE` like every other IDF build but is otherwise a
+  POSIX host environment without `esp_netif` / `esp_wifi` / lwip — so
+  fall through to the upstream POSIX `getifaddrs` /
+  `setsockopt(SO_SNDBUF)` paths instead.
+- SessionDescription.c: explicitly initialise `pSeenTransceivers` to
+  NULL so clang's `-Werror=sometimes-uninitialized` accepts the
+  CleanUp goto path.
+---
+ src/source/Ice/Network.c                      | 24 +++++++++++++------
+ .../PeerConnection/SessionDescription.c       |  2 +-
+ 2 files changed, 18 insertions(+), 8 deletions(-)
+
 diff --git a/src/source/Ice/Network.c b/src/source/Ice/Network.c
 index 4fbcb6a8f1..d4cf2e3897 100644
 --- a/src/source/Ice/Network.c
@@ -80,3 +102,6 @@ index 36f914d2eb..e5cd56797b 100644
      RTC_CODEC rtcCodec;
      MEDIA_STREAM_TRACK_KIND streamKind;
      PKvsRtpTransceiver pKvsRtpFakeTransceiver = NULL, pKvsRtpTransceiver = NULL;
+-- 
+2.39.5 (Apple Git-154)
+

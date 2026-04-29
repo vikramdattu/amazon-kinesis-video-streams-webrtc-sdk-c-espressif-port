@@ -1,10 +1,44 @@
 
 set(lws_requires mbedtls freertos esp_timer)
-# `driver` doesn't exist on the IDF Linux target; libwebsockets only
-# pulls it in via deprecated esp_spi_flash.h.
+# On real ESP targets we need lwip's `<netinet/in.h>` shim, and
+# `driver` for esp_spi_flash. On the IDF Linux target neither
+# applies — `CONFIG_LWIP_ENABLE` is off (host POSIX sockets are
+# used instead), so lwip's `port/include/netinet/in.h` would
+# shadow the system header without providing the `lwip/inet.h`
+# it transitively `#include`s.
 if(NOT IDF_TARGET STREQUAL "linux")
-    list(APPEND lws_requires driver)
+    list(APPEND lws_requires driver lwip)
 endif()
+
+# Apply local patches under `patches/` to the libwebsockets submodule
+# before its CMakeLists is read. Idempotent: `git apply --check`
+# succeeds only when the patch isn't already applied, so re-runs
+# (e.g. `idf.py reconfigure` after a fresh build dir) skip cleanly.
+#
+# These are upstream-warmcat candidates; once they merge upstream we
+# can drop the local patches and bump the submodule.
+set(_lws_dir "${CMAKE_CURRENT_SOURCE_DIR}/libwebsockets")
+file(GLOB _lws_patches "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
+list(SORT _lws_patches)
+foreach(_p IN LISTS _lws_patches)
+    execute_process(
+        COMMAND git apply --check "${_p}"
+        WORKING_DIRECTORY "${_lws_dir}"
+        RESULT_VARIABLE _can_apply
+        OUTPUT_QUIET ERROR_QUIET)
+    if(_can_apply EQUAL 0)
+        execute_process(
+            COMMAND git apply "${_p}"
+            WORKING_DIRECTORY "${_lws_dir}"
+            RESULT_VARIABLE _apply_rc)
+        if(NOT _apply_rc EQUAL 0)
+            message(FATAL_ERROR "Failed to apply libwebsockets patch: ${_p}")
+        endif()
+        message(STATUS "Applied libwebsockets patch: ${_p}")
+    else()
+        message(STATUS "Skipping already-applied libwebsockets patch: ${_p}")
+    endif()
+endforeach()
 
 # Register as ESP-IDF component
 idf_component_register(
@@ -42,6 +76,11 @@ set(LWS_WITH_THREADPOOL ON CACHE INTERNAL "Enable threadpool" FORCE)
 if(IDF_TARGET STREQUAL "linux")
     set(LWS_WITH_ESP32 OFF CACHE BOOL "" FORCE)
     set(LWS_PLAT_FREERTOS OFF CACHE BOOL "" FORCE)
+    # On the unix plat libwebsockets defaults to OpenSSL for crypto.
+    # We use mbedtls everywhere else (kvs_signaling, kvs_webrtc, dtls).
+    # Force LWS to use mbedtls too so HMAC_CTX etc. resolve to mbedtls
+    # types instead of trying to pull in OpenSSL headers.
+    set(LWS_WITH_MBEDTLS ON CACHE BOOL "" FORCE)
 endif()
 
 # Add libwebsockets as a subdirectory
@@ -49,3 +88,18 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libwebsockets
                  ${CMAKE_CURRENT_BINARY_DIR}/libwebsockets)
 
 target_link_libraries(${COMPONENT_LIB} INTERFACE websockets)
+
+# On the IDF Linux target, the IDF lwip component is registered (other
+# components transitively REQUIRE it) but `CONFIG_LWIP_ENABLE=n` so it
+# provides no headers. The propagated `port/include` directory still
+# shadows the host's `<netinet/in.h>` with a wrapper that forwards to
+# `lwip/inet.h` — which isn't on the path. Filter the lwip dirs out
+# of the `websockets` target's INCLUDE_DIRECTORIES so `<netinet/in.h>`
+# resolves to glibc directly.
+if(IDF_TARGET STREQUAL "linux")
+    get_target_property(_lws_inc websockets INCLUDE_DIRECTORIES)
+    if(_lws_inc)
+        list(FILTER _lws_inc EXCLUDE REGEX "components/lwip/")
+        set_target_properties(websockets PROPERTIES INCLUDE_DIRECTORIES "${_lws_inc}")
+    endif()
+endif()

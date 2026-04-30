@@ -1,239 +1,245 @@
 /**
- * Kinesis Video TLS implementation using ESP-TLS
- * This replaces the direct mbedTLS implementation for ESP platforms
+ * Kinesis Video TLS — ESP variant.
+ *
+ * Drives mbedtls directly through the same BIO-callback shape as upstream's
+ * `src/source/Crypto/Tls_mbedtls.c` (so the rest of the KVS SDK doesn't
+ * need to know which TLS impl is plugged in). The one ESP-specific
+ * difference: certificate verification uses ESP-IDF's compiled-in
+ * `esp_crt_bundle` instead of reading a CA cert from the filesystem.
+ * That removes the runtime requirement for `KVS_CA_CERT_PATH` on real ESP
+ * targets — which usually don't ship a writable filesystem to host a CA
+ * bundle in the first place.
+ *
+ * The interface (createTlsSession, tlsSessionStart, tlsSessionProcessPacket,
+ * tlsSessionPutApplicationData, tlsSessionShutdown, freeTlsSession) is the
+ * KVS upstream Tls.h contract; the struct it operates on is the
+ * mbedtls-backed `__TlsSession` from Tls.h. Functions here mirror the
+ * shape of the upstream Tls_mbedtls.c so behavioural drift stays low —
+ * if upstream changes the handshake flow or adds error handling, mirror
+ * the same change here.
+ *
+ * Why not patch upstream Tls_mbedtls.c instead? Two reasons: (1) we'd be
+ * carrying a forever-patch on a frequently-touched upstream file just for
+ * one esp_crt_bundle call. (2) AWS may not accept ESP-platform-specific
+ * code into the upstream SDK. Owning a thin parallel implementation is
+ * cheaper than maintaining an upstream patch.
  */
 #define LOG_CLASS "TLS_esp"
 #include "../Include_i.h"
 
-// ESP-specific includes
-#include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 
 #define TAG "TLS_ESP"
 
-// ESP-TLS specific TLS session structure
-typedef struct {
-    // Common TLS session fields (maintain interface compatibility)
-    TlsSessionCallbacks callbacks;
-    TLS_SESSION_STATE state;
-    PIOBuffer pReadBuffer;
+INT32 tlsSessionSendCallback(PVOID customData, const unsigned char* buf, ULONG len)
+{
+    STATUS retStatus = STATUS_SUCCESS;
+    PTlsSession pTlsSession = (PTlsSession) customData;
 
-    // ESP-TLS specific fields
-    esp_tls_t* pEspTls;
-    esp_tls_cfg_t espTlsConfig;
+    CHK(pTlsSession != NULL, STATUS_NULL_ARG);
 
-    // Connection state
-    PCHAR hostname;
-    BOOL isServer;
-    BOOL nonBlocking;
+    pTlsSession->callbacks.outboundPacketFn(pTlsSession->callbacks.outBoundPacketFnCustomData, (PBYTE) buf, len);
 
-    // Buffer for outbound data
-    PBYTE pOutboundBuffer;
-    UINT32 outboundBufferLen;
-    UINT32 outboundBufferCapacity;
+CleanUp:
 
-} EspTlsSession, *PEspTlsSession;
+    return STATUS_FAILED(retStatus) ? -retStatus : (INT32) len;
+}
 
-// Forward declarations
-STATUS tlsSessionChangeState(PTlsSession pTlsSession, TLS_SESSION_STATE newState);
-INT32 tlsSessionSendCallback(PVOID customData, const unsigned char* buf, ULONG len);
-INT32 tlsSessionReceiveCallback(PVOID customData, unsigned char* buf, ULONG len);
+INT32 tlsSessionReceiveCallback(PVOID customData, unsigned char* buf, ULONG len)
+{
+    STATUS retStatus = STATUS_SUCCESS;
+    PTlsSession pTlsSession = (PTlsSession) customData;
+    PIOBuffer pBuffer;
+    UINT32 readBytes = MBEDTLS_ERR_SSL_WANT_READ;
 
-/**
- * Create a new TLS session using ESP-TLS
- */
+    CHK(pTlsSession != NULL, STATUS_NULL_ARG);
+
+    pBuffer = pTlsSession->pReadBuffer;
+
+    if (pBuffer->off < pBuffer->len) {
+        retStatus = ioBufferRead(pBuffer, buf, len, &readBytes);
+    }
+
+CleanUp:
+
+    return STATUS_FAILED(retStatus) ? -retStatus : (INT32) readBytes;
+}
+
 STATUS createTlsSession(PTlsSessionCallbacks pCallbacks, PTlsSession* ppTlsSession)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pTlsSession = NULL;
+    PTlsSession pTlsSession = NULL;
 
-    ESP_LOGI(TAG, "ESP-TLS: createTlsSession() called - Using ESP-TLS implementation instead of mbedTLS");
     CHK(ppTlsSession != NULL && pCallbacks != NULL && pCallbacks->outboundPacketFn != NULL, STATUS_NULL_ARG);
 
-    pTlsSession = (PEspTlsSession) MEMCALLOC(1, SIZEOF(EspTlsSession));
+    pTlsSession = (PTlsSession) MEMCALLOC(1, SIZEOF(TlsSession));
     CHK(pTlsSession != NULL, STATUS_NOT_ENOUGH_MEMORY);
 
-    // Create I/O buffer for incoming data
     CHK_STATUS(createIOBuffer(DEFAULT_MTU_SIZE_BYTES, &pTlsSession->pReadBuffer));
-
-    // Store callbacks
     pTlsSession->callbacks = *pCallbacks;
     pTlsSession->state = TLS_SESSION_STATE_NEW;
 
-    // Initialize ESP-TLS configuration with secure defaults
-    MEMSET(&pTlsSession->espTlsConfig, 0, SIZEOF(esp_tls_cfg_t));
-
-    // Use ESP certificate bundle for CA verification (no file dependencies!)
-    pTlsSession->espTlsConfig.crt_bundle_attach = esp_crt_bundle_attach;
-
-    // Configure for non-blocking operation to work with state machines
-    pTlsSession->espTlsConfig.non_block = true;
-    pTlsSession->espTlsConfig.timeout_ms = 10000;  // 10 second timeout
-
-    // Initialize outbound buffer for non-blocking writes
-    pTlsSession->outboundBufferCapacity = DEFAULT_MTU_SIZE_BYTES;
-    pTlsSession->pOutboundBuffer = (PBYTE) MEMCALLOC(1, pTlsSession->outboundBufferCapacity);
-    CHK(pTlsSession->pOutboundBuffer != NULL, STATUS_NOT_ENOUGH_MEMORY);
-
-    ESP_LOGI(TAG, "ESP-TLS: Created ESP-TLS session with certificate bundle verification (no cert files needed!)");
+    /* mbedtls primitives. cacert is intentionally unused — esp_crt_bundle
+     * supplies the trusted-root set in tlsSessionStartWithHostname. We still
+     * mbedtls_x509_crt_init() it so freeTlsSession's mbedtls_x509_crt_free()
+     * is safe (free on a never-populated chain is a no-op). */
+    mbedtls_entropy_init(&pTlsSession->entropy);
+    mbedtls_ctr_drbg_init(&pTlsSession->ctrDrbg);
+    mbedtls_x509_crt_init(&pTlsSession->cacert);
+    mbedtls_ssl_config_init(&pTlsSession->sslCtxConfig);
+    mbedtls_ssl_init(&pTlsSession->sslCtx);
+    CHK(mbedtls_ctr_drbg_seed(&pTlsSession->ctrDrbg, mbedtls_entropy_func, &pTlsSession->entropy, NULL, 0) == 0,
+        STATUS_CREATE_SSL_FAILED);
 
 CleanUp:
+
     if (STATUS_FAILED(retStatus) && pTlsSession != NULL) {
-        freeTlsSession((PTlsSession*) &pTlsSession);
+        freeTlsSession(&pTlsSession);
     }
 
     if (ppTlsSession != NULL) {
-        *ppTlsSession = (PTlsSession) pTlsSession;
+        *ppTlsSession = pTlsSession;
     }
 
     LEAVES();
     return retStatus;
 }
 
-/**
- * Free TLS session and cleanup ESP-TLS resources
- */
 STATUS freeTlsSession(PTlsSession* ppTlsSession)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pTlsSession = NULL;
+    PTlsSession pTlsSession = NULL;
 
-    ESP_LOGD(TAG, "ESP-TLS: freeTlsSession() called - cleaning up ESP-TLS resources");
     CHK(ppTlsSession != NULL, STATUS_NULL_ARG);
 
-    pTlsSession = (PEspTlsSession) *ppTlsSession;
+    pTlsSession = *ppTlsSession;
     CHK(pTlsSession != NULL, retStatus);
 
-    // Clean up ESP-TLS connection
-    if (pTlsSession->pEspTls != NULL) {
-        esp_tls_conn_destroy(pTlsSession->pEspTls);
-        pTlsSession->pEspTls = NULL;
-    }
+    mbedtls_entropy_free(&pTlsSession->entropy);
+    mbedtls_ctr_drbg_free(&pTlsSession->ctrDrbg);
+    mbedtls_x509_crt_free(&pTlsSession->cacert);
+    mbedtls_ssl_config_free(&pTlsSession->sslCtxConfig);
+    mbedtls_ssl_free(&pTlsSession->sslCtx);
 
-    // Free I/O buffer
-    if (pTlsSession->pReadBuffer != NULL) {
-        freeIOBuffer(&pTlsSession->pReadBuffer);
-    }
-
-    // Free outbound buffer
-    SAFE_MEMFREE(pTlsSession->pOutboundBuffer);
-
-    // Free hostname if allocated
-    SAFE_MEMFREE(pTlsSession->hostname);
-
-    // Shutdown session if not already closed
-    retStatus = tlsSessionShutdown((PTlsSession) pTlsSession);
-
+    freeIOBuffer(&pTlsSession->pReadBuffer);
+    retStatus = tlsSessionShutdown(pTlsSession);
     SAFE_MEMFREE(*ppTlsSession);
 
 CleanUp:
-    LEAVES();
     return retStatus;
 }
 
-/**
- * Start TLS session with hostname verification
- */
 STATUS tlsSessionStartWithHostname(PTlsSession pTlsSession, BOOL isServer, PCHAR hostname)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pEspTlsSession = (PEspTlsSession) pTlsSession;
+    INT32 sslRet;
+    int crtBundleRet;
 
-    ESP_LOGD(TAG, "ESP-TLS: tlsSessionStartWithHostname() called - hostname: %s, isServer: %s",
-             hostname ? hostname : "NULL", isServer ? "true" : "false");
     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
-    CHK(pEspTlsSession->state == TLS_SESSION_STATE_NEW, retStatus);
+    CHK(pTlsSession->state == TLS_SESSION_STATE_NEW, retStatus);
 
-    // Store connection parameters
-    pEspTlsSession->isServer = isServer;
-    if (hostname != NULL) {
-        UINT32 hostnameLen = STRLEN(hostname);
-        pEspTlsSession->hostname = (PCHAR) MEMCALLOC(1, hostnameLen + 1);
-        CHK(pEspTlsSession->hostname != NULL, STATUS_NOT_ENOUGH_MEMORY);
-        STRCPY(pEspTlsSession->hostname, hostname);
+    CHK(mbedtls_ssl_config_defaults(&pTlsSession->sslCtxConfig, isServer ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
+                                    MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) == 0,
+        STATUS_CREATE_SSL_FAILED);
+
+    /* ESP-platform difference vs upstream Tls_mbedtls.c: instead of
+     * `mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL)` populated from a
+     * filesystem read of KVS_CA_CERT_PATH, attach IDF's compiled-in CA
+     * bundle. This installs a verification callback that walks the
+     * bundle for each chain validation request — no filesystem read,
+     * no per-device cert provisioning. */
+    crtBundleRet = esp_crt_bundle_attach(&pTlsSession->sslCtxConfig);
+    if (crtBundleRet != 0) {
+        ESP_LOGE(TAG, "esp_crt_bundle_attach failed: %d", crtBundleRet);
+        CHK(FALSE, STATUS_INVALID_CA_CERT_PATH);
     }
 
-    // Configure certificate verification based on hostname
     if (hostname != NULL) {
-        // Strict verification for hostname-based connections
-        pEspTlsSession->espTlsConfig.skip_common_name = false;
-        ESP_LOGD(TAG, "ESP-TLS: Starting TLS with STRICT hostname verification for: %s", hostname);
+        /* Strict verification when we have a hostname to match. */
+        mbedtls_ssl_conf_authmode(&pTlsSession->sslCtxConfig, MBEDTLS_SSL_VERIFY_REQUIRED);
     } else {
-        // Optional verification for IP-based connections
-        pEspTlsSession->espTlsConfig.skip_common_name = true;
-        ESP_LOGD(TAG, "ESP-TLS: Starting TLS with RELAXED certificate verification (IP-based connection)");
+        /* Optional verification for IP-based connections (no SNI / no CN to match). */
+        mbedtls_ssl_conf_authmode(&pTlsSession->sslCtxConfig, MBEDTLS_SSL_VERIFY_OPTIONAL);
     }
 
-    // ESP-TLS doesn't support server mode in the same way - this is typically for client connections to TURN servers
-    CHK(!isServer, STATUS_NOT_IMPLEMENTED);  // Server mode not implemented for TURN use case
+    mbedtls_ssl_conf_rng(&pTlsSession->sslCtxConfig, mbedtls_ctr_drbg_random, &pTlsSession->ctrDrbg);
+    CHK(mbedtls_ssl_setup(&pTlsSession->sslCtx, &pTlsSession->sslCtxConfig) == 0, STATUS_SSL_CTX_CREATION_FAILED);
 
-    // Initialize ESP-TLS handle (connection will be established when data flows)
-    pEspTlsSession->pEspTls = esp_tls_init();
-    CHK(pEspTlsSession->pEspTls != NULL, STATUS_CREATE_SSL_FAILED);
+    /* SNI + cert hostname check. Mirrors upstream's mbedtls 3.x guard. */
+    if (!isServer && hostname != NULL) {
+        CHK(mbedtls_ssl_set_hostname(&pTlsSession->sslCtx, hostname) == 0, STATUS_SSL_CTX_CREATION_FAILED);
+    }
 
-    // Change state to connecting - actual connection happens during first data exchange
-    CHK_STATUS(tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CONNECTING));
+    mbedtls_ssl_set_mtu(&pTlsSession->sslCtx, DEFAULT_MTU_SIZE_BYTES);
+    mbedtls_ssl_set_bio(&pTlsSession->sslCtx, pTlsSession, tlsSessionSendCallback, tlsSessionReceiveCallback, NULL);
 
-    ESP_LOGD(TAG, "ESP-TLS: TLS session initialized with ESP certificate bundle - ready for secure connection!");
+    /* Kick the handshake. The first round-trip's ClientHello is queued via the
+     * BIO send callback — actually transmitted by SocketConnection. WANT_READ
+     * / WANT_WRITE on first call is normal for non-blocking I/O. */
+    tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CONNECTING);
+    sslRet = mbedtls_ssl_handshake(&pTlsSession->sslCtx);
+    CHK(sslRet == MBEDTLS_ERR_SSL_WANT_READ || sslRet == MBEDTLS_ERR_SSL_WANT_WRITE, STATUS_SSL_CTX_CREATION_FAILED);
 
 CleanUp:
+
     CHK_LOG_ERR(retStatus);
+
     LEAVES();
     return retStatus;
 }
 
-/**
- * Start TLS session without hostname verification
- */
 STATUS tlsSessionStart(PTlsSession pTlsSession, BOOL isServer)
 {
     return tlsSessionStartWithHostname(pTlsSession, isServer, NULL);
 }
 
-/**
- * Process incoming TLS packet data
- */
 STATUS tlsSessionProcessPacket(PTlsSession pTlsSession, PBYTE pData, UINT32 bufferLen, PUINT32 pDataLen)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pEspTlsSession = (PEspTlsSession) pTlsSession;
+    INT32 sslRet, readBytes = 0;
+    BOOL iterate = TRUE;
     PIOBuffer pReadBuffer;
-    INT32 readBytes = 0;
 
-    ESP_LOGD(TAG, "ESP-TLS: tlsSessionProcessPacket() - processing %d bytes through ESP-TLS", (int) bufferLen);
     CHK(pTlsSession != NULL && pData != NULL && pDataLen != NULL, STATUS_NULL_ARG);
-    CHK(pEspTlsSession->state != TLS_SESSION_STATE_NEW, STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND);
-    CHK(pEspTlsSession->state != TLS_SESSION_STATE_CLOSED, STATUS_SOCKET_CONNECTION_CLOSED_ALREADY);
+    CHK(pTlsSession->state != TLS_SESSION_STATE_NEW, STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND);
+    CHK(pTlsSession->state != TLS_SESSION_STATE_CLOSED, STATUS_SOCKET_CONNECTION_CLOSED_ALREADY);
 
-    pReadBuffer = pEspTlsSession->pReadBuffer;
-
-    // Add incoming data to read buffer
+    pReadBuffer = pTlsSession->pReadBuffer;
     CHK_STATUS(ioBufferWrite(pReadBuffer, pData, *pDataLen));
 
-    // If we're connecting and have data, try to complete handshake
-    if (pEspTlsSession->state == TLS_SESSION_STATE_CONNECTING) {
-        // For ESP-TLS, we need to feed data through the connection process
-        // This is a simplified approach - in practice, ESP-TLS expects socket operations
-        ESP_LOGD(TAG, "Processing handshake data, buffer contains %d bytes", (int) (pReadBuffer->len - pReadBuffer->off));
-
-        // Simulate handshake completion for now
-        // In a real implementation, this would involve more complex state handling
-        CHK_STATUS(tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CONNECTED));
-        readBytes = 0; // Handshake data consumed
-    } else if (pEspTlsSession->state == TLS_SESSION_STATE_CONNECTED) {
-        // Read application data
-        if (pReadBuffer->off < pReadBuffer->len) {
-            UINT32 availableData = pReadBuffer->len - pReadBuffer->off;
-            UINT32 copyLen = MIN(availableData, bufferLen);
-
-            CHK_STATUS(ioBufferRead(pReadBuffer, pData, copyLen, (PUINT32) &readBytes));
-            ESP_LOGD(TAG, "Processed %d bytes of application data", (int) readBytes);
+    /* Consume incoming TLS records — handshake records during CONNECTING,
+     * application data records once CONNECTED. mbedtls_ssl_read pulls from
+     * pReadBuffer via tlsSessionReceiveCallback. */
+    while (iterate && pReadBuffer->off < pReadBuffer->len && bufferLen > 0) {
+        sslRet = mbedtls_ssl_read(&pTlsSession->sslCtx, pData + readBytes, bufferLen);
+        if (sslRet > 0) {
+            readBytes += sslRet;
+            bufferLen -= sslRet;
+        } else if (sslRet == 0 || sslRet == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+            DLOGD("Detected TLS close_notify alert");
+            CHK_STATUS(tlsSessionShutdown(pTlsSession));
+            iterate = FALSE;
+        } else if (sslRet == MBEDTLS_ERR_SSL_WANT_READ || sslRet == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            iterate = FALSE;
+        } else {
+            ESP_LOGE(TAG, "mbedtls_ssl_read failed: -0x%04x", -sslRet);
+            readBytes = 0;
+            retStatus = STATUS_INTERNAL_ERROR;
+            iterate = FALSE;
         }
+    }
+
+#if MBEDTLS_BEFORE_V3
+    if (pTlsSession->sslCtx.state == MBEDTLS_SSL_HANDSHAKE_OVER) {
+#else
+    if (pTlsSession->sslCtx.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER) {
+#endif
+        tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CONNECTED);
     }
 
 CleanUp:
@@ -242,59 +248,35 @@ CleanUp:
     }
 
     if (STATUS_FAILED(retStatus)) {
-        ESP_LOGD(TAG, "Warning: processing TLS packet failed with 0x%08" PRIx32, retStatus);
+        DLOGD("Warning: reading socket data failed with 0x%08x", retStatus);
     }
 
     LEAVES();
     return retStatus;
 }
 
-/**
- * Send application data through TLS
- */
 STATUS tlsSessionPutApplicationData(PTlsSession pTlsSession, PBYTE pData, UINT32 dataLen)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pEspTlsSession = (PEspTlsSession) pTlsSession;
+    UINT32 writtenBytes = 0;
+    BOOL iterate = TRUE;
+    INT32 sslRet;
 
-    ESP_LOGD(TAG, "ESP-TLS: tlsSessionPutApplicationData() - sending %d bytes through ESP-TLS", (int) dataLen);
     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
-    CHK(pEspTlsSession->state == TLS_SESSION_STATE_CONNECTED, STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND);
 
-    // For non-blocking operation, we buffer outbound data and send via callback
-    if (pData != NULL && dataLen > 0) {
-        // Ensure outbound buffer has capacity
-        if (pEspTlsSession->outboundBufferLen + dataLen > pEspTlsSession->outboundBufferCapacity) {
-            // Expand buffer if needed
-            UINT32 newCapacity = pEspTlsSession->outboundBufferCapacity * 2;
-            while (newCapacity < pEspTlsSession->outboundBufferLen + dataLen) {
-                newCapacity *= 2;
-            }
-
-            PBYTE pNewBuffer = (PBYTE) MEMREALLOC(pEspTlsSession->pOutboundBuffer, newCapacity);
-            CHK(pNewBuffer != NULL, STATUS_NOT_ENOUGH_MEMORY);
-
-            pEspTlsSession->pOutboundBuffer = pNewBuffer;
-            pEspTlsSession->outboundBufferCapacity = newCapacity;
+    while (iterate && writtenBytes < dataLen) {
+        sslRet = mbedtls_ssl_write(&pTlsSession->sslCtx, pData + writtenBytes, dataLen - writtenBytes);
+        if (sslRet > 0) {
+            writtenBytes += sslRet;
+        } else if (sslRet == MBEDTLS_ERR_SSL_WANT_READ || sslRet == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            iterate = FALSE;
+        } else {
+            ESP_LOGE(TAG, "mbedtls_ssl_write failed: -0x%04x", -sslRet);
+            writtenBytes = 0;
+            retStatus = STATUS_INTERNAL_ERROR;
+            iterate = FALSE;
         }
-
-        // Add data to outbound buffer
-        MEMCPY(pEspTlsSession->pOutboundBuffer + pEspTlsSession->outboundBufferLen, pData, dataLen);
-        pEspTlsSession->outboundBufferLen += dataLen;
-    }
-
-    // Send buffered data via callback
-    if (pEspTlsSession->outboundBufferLen > 0) {
-        pEspTlsSession->callbacks.outboundPacketFn(
-            pEspTlsSession->callbacks.outBoundPacketFnCustomData,
-            pEspTlsSession->pOutboundBuffer,
-            pEspTlsSession->outboundBufferLen
-        );
-
-        // Clear sent data
-        pEspTlsSession->outboundBufferLen = 0;
-        ESP_LOGD(TAG, "Sent %d bytes via outbound callback", (int) dataLen);
     }
 
 CleanUp:
@@ -302,76 +284,38 @@ CleanUp:
     return retStatus;
 }
 
-/**
- * Shutdown TLS session
- */
 STATUS tlsSessionShutdown(PTlsSession pTlsSession)
 {
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pEspTlsSession = (PEspTlsSession) pTlsSession;
 
     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
-    CHK(pEspTlsSession->state != TLS_SESSION_STATE_CLOSED, retStatus);
+    CHK(pTlsSession->state != TLS_SESSION_STATE_CLOSED, retStatus);
 
-    ESP_LOGD(TAG, "Shutting down TLS session");
-
-    // Send close notify if connected
-    if (pEspTlsSession->state == TLS_SESSION_STATE_CONNECTED && pEspTlsSession->pEspTls != NULL) {
-        // ESP-TLS handles close notify internally during destroy
-        esp_tls_conn_destroy(pEspTlsSession->pEspTls);
-        pEspTlsSession->pEspTls = NULL;
+    while (mbedtls_ssl_close_notify(&pTlsSession->sslCtx) == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        /* keep flushing outgoing buffer until nothing left */
     }
-
     CHK_STATUS(tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CLOSED));
 
 CleanUp:
+
     CHK_LOG_ERR(retStatus);
+
     return retStatus;
 }
 
-/**
- * Change TLS session state and notify via callback
- */
 STATUS tlsSessionChangeState(PTlsSession pTlsSession, TLS_SESSION_STATE newState)
 {
     STATUS retStatus = STATUS_SUCCESS;
-    PEspTlsSession pEspTlsSession = (PEspTlsSession) pTlsSession;
 
     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
+    CHK(pTlsSession->state != newState, retStatus);
 
-    if (pEspTlsSession->state != newState) {
-        ESP_LOGD(TAG, "TLS state change: %d -> %d", pEspTlsSession->state, newState);
-        pEspTlsSession->state = newState;
+    pTlsSession->state = newState;
 
-        // Notify state change via callback if available
-        if (pEspTlsSession->callbacks.stateChangeFn != NULL) {
-            pEspTlsSession->callbacks.stateChangeFn(
-                pEspTlsSession->callbacks.stateChangeFnCustomData,
-                newState
-            );
-        }
+    if (pTlsSession->callbacks.stateChangeFn != NULL) {
+        pTlsSession->callbacks.stateChangeFn(pTlsSession->callbacks.stateChangeFnCustomData, newState);
     }
 
 CleanUp:
     return retStatus;
-}
-
-/**
- * Send callback for mbedTLS compatibility (not used in ESP-TLS approach)
- */
-INT32 tlsSessionSendCallback(PVOID customData, const unsigned char* buf, ULONG len)
-{
-    // This callback interface is maintained for compatibility
-    // ESP-TLS handles sending internally, so we just return success
-    return len;
-}
-
-/**
- * Receive callback for mbedTLS compatibility (not used in ESP-TLS approach)
- */
-INT32 tlsSessionReceiveCallback(PVOID customData, unsigned char* buf, ULONG len)
-{
-    // This callback interface is maintained for compatibility
-    // ESP-TLS handles receiving internally, so we indicate no data available
-    return MBEDTLS_ERR_SSL_WANT_READ;
 }

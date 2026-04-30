@@ -102,29 +102,26 @@ CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
 # slirp's NAT.
 CONFIG_KVS_WEBRTC_FILTER_TURN_UDP=y
 
-# Use upstream Tls_mbedtls.c for KVS TURN-over-TLS instead of our
-# components/kvs_webrtc/src/Tls_esp.c port. The Tls_esp.c
-# implementation is incomplete (its own comments admit "Simulate
-# handshake completion for now"): it never drives an actual TLS
-# handshake, the session state never transitions to CONNECTED, and
-# every tlsSessionPutApplicationData() call is rejected with
-# STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND. Result on QEMU: master
-# tries to send STUN ALLOCATE over the TLS-TCP TURN connection, every
-# write is dropped, AWS TURN never sees a request, master times out
-# at 5 s with STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED.
+# Tls_esp.c was previously a non-functional stub (its own comments
+# said "Simulate handshake completion for now") — it never drove the
+# real mbedtls handshake, every send was rejected with
+# STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND, and on QEMU we hit
+# STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED at the 5 s state-machine
+# timeout because the master couldn't get its STUN ALLOCATE through.
 #
-# Upstream's Tls_mbedtls.c does the real TLS dance (mbedtls_ssl_handshake
-# + read/write callbacks). It's what `examples/linux_test` already uses
-# (CONFIG_USE_ESP_TLS_FOR_KVS=n in linux_test/sdkconfig.defaults), and
-# the linux_test_kvs_relay CI job verified it works for TURN-over-TLS.
+# Tls_esp.c has been rewritten to mirror upstream's Tls_mbedtls.c
+# logic (real mbedtls_ssl_handshake / read / write / close_notify
+# flow with BIO callbacks), with one ESP-platform substitution: it
+# uses esp_crt_bundle_attach() for certificate verification instead of
+# reading KVS_CA_CERT_PATH from the filesystem. This means real ESP
+# devices don't need a writable filesystem with a CA bundle — the
+# bundle is compiled into firmware via IDF's certificate-bundle
+# component.
 #
-# Switching real ESP targets here is an open question — Tls_esp.c was
-# written to leverage ESP's certificate bundle and esp-tls's existing
-# TLS plumbing for code-size reasons. For QEMU we just need correctness;
-# a few KB extra in mbedtls is acceptable to make the integration test
-# work. Real ESP targets keep CONFIG_USE_ESP_TLS_FOR_KVS=y until the
-# Tls_esp.c port is completed (separate work).
-CONFIG_USE_ESP_TLS_FOR_KVS=n
+# Default Kconfig (CONFIG_USE_ESP_TLS_FOR_KVS=y) now picks the
+# functional Tls_esp.c. linux_test stays on CONFIG_USE_ESP_TLS_FOR_KVS=n
+# because the IDF Linux target already has a system CA bundle at a
+# well-known path and no esp_crt_bundle equivalent.
 
 # Force mbedtls to use software crypto, not the ESP32-S3 hardware AES /
 # SHA / MPI peripherals. qemu-xtensa's emulation of these has known

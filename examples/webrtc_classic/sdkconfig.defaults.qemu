@@ -55,15 +55,11 @@ CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
 
 # Verbose runtime logging — the QEMU integration test only runs ~60s
-# and the serial log is uploaded as artifact. VERBOSE (5) so we capture
-# DLOGS/DLOGV calls in the upstream KVS SDK + ESP-TLS / SocketConnection
-# / TurnConnection internals — the QEMU jobs are currently failing at
-# `TLS_ESP: Shutting down TLS session` ~4s after ICE nomination, before
-# DTLS can complete; the trigger isn't visible at DEBUG (4) and we need
-# the verbose lines to figure out which send/recv error torched the
-# TURN-over-TLS control connection.
-CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
-CONFIG_LOG_DEFAULT_LEVEL=5
+# and the serial log is uploaded as artifact. We want detail on
+# offer-processing failures (the master returns generic
+# STATUS_INTERNAL_ERROR 0xc when SDP parse / codec match fails).
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_LOG_DEFAULT_LEVEL=4
 
 # Networking: drive through the OpenCores Ethernet model that
 # qemu-xtensa exposes (`-nic user,model=open_eth`) instead of WiFi.

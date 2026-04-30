@@ -588,3 +588,133 @@ jobs:
             ffprobe.txt
             ffprobe_raw.txt
           retention-days: 7
+
+  # PROBE JOB: same SDK as linux_test_kvs but built with
+  # CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y so the master is
+  # forced through TURN-over-TLS instead of using host candidates.
+  # Purpose: isolate whether the QEMU s3/esp32 failure (TLS_ESP
+  # shutting down ~4 s after ICE pair selection, before DTLS can
+  # complete) is in our SDK's TURN-over-TLS handling or specific to
+  # the QEMU + slirp + software-mbedtls combination.
+  #
+  # Outcome interpretation:
+  #   - this job PASSES → bug is QEMU-environment-specific, focus
+  #     debugging on the QEMU side. linux_test_kvs (host pair) plus
+  #     this (TURN-over-TLS pair) cover the SDK paths real devices
+  #     hit.
+  #   - this job FAILS the same way as the QEMU jobs → bug is in
+  #     our SDK / upstream KVS TURN-over-TLS code, debuggable with
+  #     a normal Linux debugger. linux_test_kvs (host pair) still
+  #     passes so we know the bug is specifically TURN-relay.
+  #
+  # Marked continue-on-error initially so we get the data without
+  # blocking the run while the probe is being interpreted.
+  linux_test_kvs_relay:
+    name: "linux_test (relay-only probe) | KVS master"
+    runs-on: ubuntu-22.04
+    container: espressif/idf:release-v5.5
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
+    continue-on-error: true
+    timeout-minutes: 30
+
+    env:
+      KVS_CHANNEL_NAME: ${{ secrets.KVS_QEMU_CHANNEL_NAME && format('{0}-linux-relay', secrets.KVS_QEMU_CHANNEL_NAME) || format('espressif-port-linux-relay-{0}', github.run_id) }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+      TEST_DURATION_SEC: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify AWS creds
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        id: creds
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+
+      - name: Apply SDK patches
+        shell: bash
+        run: |
+          git config --global --add safe.directory "*"
+          cd amazon-kinesis-video-streams-webrtc-sdk-c
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+          git am ../patches/*.patch
+
+      - name: Install Python viewer deps + ffmpeg
+        if: steps.creds.outputs.skip != '1'
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          apt-get update && apt-get install -y --no-install-recommends ffmpeg
+          pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
+
+      - name: Build linux_test with RELAY-only overlay
+        if: steps.creds.outputs.skip != '1'
+        env:
+          KVS_SDK_PATH: ${{ github.workspace }}
+          # Same defaults chain as the regular job, plus the relay
+          # overlay that sets CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y.
+          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.relay"
+        shell: bash
+        run: |
+          cd examples/linux_test
+          . /opt/esp/idf/export.sh
+          idf.py --preview set-target linux
+          idf.py build
+
+      - name: Run linux_test (relay-forced) + Python viewer
+        if: steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          # Distinct OUT_PATH so the relay-probe artifact doesn't
+          # overwrite the baseline linux_test artifact.
+          export OUT_PATH="$GITHUB_WORKSPACE/linux_recording_relay.mkv"
+          export LOG_PATH="$GITHUB_WORKSPACE/python_viewer_relay.log"
+          export KVS_FRAMES_DIR="$GITHUB_WORKSPACE/amazon-kinesis-video-streams-webrtc-sdk-c/samples"
+          cd examples/linux_test
+          . /opt/esp/idf/export.sh
+          "$GITHUB_WORKSPACE/tests/docker/ci/run_linux_with_viewer.sh"
+          # `run_linux_with_viewer.sh` writes linux_master.log inside
+          # examples/linux_test — rename so it doesn't collide with the
+          # baseline job's artifact when both end up in the same run.
+          mv linux_master.log linux_master_relay.log 2>/dev/null || true
+
+      - name: Verify recording
+        if: steps.creds.outputs.skip != '1'
+        shell: bash
+        run: tests/docker/ci/verify_recording.sh "$GITHUB_WORKSPACE/linux_recording_relay.mkv"
+
+      - name: Delete KVS channel
+        if: always() && steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          python tests/docker/ci/kvs_delete_channel.py
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-kvs-relay-${{ github.run_id }}
+          path: |
+            examples/linux_test/linux_master_relay.log
+            python_viewer_relay.log
+            linux_recording_relay.mkv
+            linux_recording_relay.h264
+            ffprobe.txt
+            ffprobe_raw.txt
+          retention-days: 7

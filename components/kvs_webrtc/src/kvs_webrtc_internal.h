@@ -138,6 +138,20 @@ typedef struct kvs_pc_session_s {
     bool remote_can_trickle_ice;
     bool candidate_gathering_done;
 
+    // Non-trickle answer fallback. When the remote peer doesn't support
+    // trickle ICE, the master must wait for full local ICE gathering
+    // before sending the SDP_ANSWER. If TURN allocation fails (or any
+    // gathering step stalls / errors out before the gather-done callback
+    // fires), the answer would otherwise never be sent and the remote
+    // peer would time out. `non_trickle_answer_watchdog_id` is a one-shot
+    // entry in `client->timer_queue` started from `kvs_handleOffer`'s
+    // non-trickle branch; it forces the answer to be sent with whatever
+    // candidates have been gathered so far. `non_trickle_answer_sent`
+    // guards against a double-send race between the natural gather-done
+    // path and the watchdog firing concurrently.
+    UINT32 non_trickle_answer_watchdog_id;
+    volatile ATOMIC_BOOL non_trickle_answer_sent;
+
     // Media streaming state
     volatile ATOMIC_BOOL media_started;
     volatile INT32 last_kvs_state;  // Last RTC_PEER_CONNECTION_STATE seen (diagnostic)

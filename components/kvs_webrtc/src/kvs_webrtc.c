@@ -59,6 +59,16 @@ static struct {
 
 // Forward declarations for KVS SDK callbacks
 static VOID onIceCandidateHandler(UINT64 customData, PCHAR candidateJson);
+static VOID kvs_send_non_trickle_answer(kvs_pc_session_t* session);
+static STATUS kvs_non_trickle_answer_watchdog_cb(UINT32 timerId, UINT64 currentTime, UINT64 customData);
+
+/* Force-send the non-trickle SDP_ANSWER if upstream ICE gathering doesn't
+ * complete within this window. Long enough to let a healthy run finish
+ * (host + srflx + relay all gathered), short enough that a viewer with
+ * an offer-side timeout in the 30 s ballpark — including aiortc — still
+ * sees the answer in time. Expressed in 100-nanosecond units to match
+ * timerQueueAddTimer's HUNDREDS_OF_NANOS_IN_A_SECOND-scaled API. */
+#define NON_TRICKLE_ANSWER_WATCHDOG_DELAY (8 * HUNDREDS_OF_NANOS_IN_A_SECOND)
 static STATUS kvs_pregenerateCertTimerCallback(UINT32 timerId, UINT64 currentTime, UINT64 customData);
 static STATUS kvs_iceCandidatePairStatsCallback(UINT32 timerId, UINT64 currentTime, UINT64 customData);
 static STATUS kvs_metricsCollectionCallback(UINT64 callerData, PHashEntry pHashEntry);
@@ -542,6 +552,8 @@ static WEBRTC_STATUS kvs_pc_create_session(void *pPeerConnectionClient,
     // Initialize ICE gathering flags
     session->candidate_gathering_done = FALSE;
     session->remote_can_trickle_ice = FALSE;  // Will be set when processing offer/answer
+    session->non_trickle_answer_watchdog_id = MAX_UINT32;
+    ATOMIC_STORE_BOOL(&session->non_trickle_answer_sent, FALSE);
 
     // Initialize metrics
     session->pc_metrics.version = PEER_CONNECTION_METRICS_CURRENT_VERSION;
@@ -703,6 +715,19 @@ static WEBRTC_STATUS kvs_pc_destroy_session(void *pSession)
     session = (kvs_pc_session_t *)pSession;
 
     ESP_LOGI(TAG, "Destroying KVS peer connection session for peer: %s", session->peer_id);
+
+    /* Tear down the non-trickle answer watchdog before any other cleanup
+     * — its callback dereferences `session`, so leaving it armed past
+     * destroy is a use-after-free risk. Cancel via the same timer queue
+     * the timer was scheduled on (`session->client->timer_queue`). */
+    if (session->non_trickle_answer_watchdog_id != MAX_UINT32 &&
+        session->client != NULL &&
+        IS_VALID_TIMER_QUEUE_HANDLE(session->client->timer_queue)) {
+        timerQueueCancelTimer(session->client->timer_queue,
+                              session->non_trickle_answer_watchdog_id,
+                              POINTER_TO_HANDLE(session));
+        session->non_trickle_answer_watchdog_id = MAX_UINT32;
+    }
 
     // Manage global media threads and session cleanup (now handles all cleanup logic)
     if (session->client != NULL && IS_VALID_MUTEX_VALUE(session->client->session_count_mutex) &&
@@ -1026,6 +1051,103 @@ static WEBRTC_STATUS kvs_pc_set_callbacks(void *pSession,
 // KVS SDK Callback Handlers
 //
 
+/* Re-create the SDP answer from the current local description and emit it
+ * via `on_message_received`. Used both by the natural "ICE gathering
+ * completed" path (master in non-trickle mode) and by the watchdog
+ * fallback when gathering stalls. The atomic guard prevents the two paths
+ * from racing and double-sending. */
+static VOID kvs_send_non_trickle_answer(kvs_pc_session_t* session)
+{
+    STATUS retStatus = STATUS_SUCCESS;
+    PCHAR payload = NULL;
+
+    CHK(session != NULL, STATUS_NULL_ARG);
+    CHK(session->on_message_received != NULL, retStatus);
+    /* test-and-set: bail if either the natural path or a previous watchdog
+     * has already sent the answer for this session. */
+    if (ATOMIC_EXCHANGE_BOOL(&session->non_trickle_answer_sent, TRUE)) {
+        return;
+    }
+
+    /* Cancel the watchdog if it's still armed. Safe to call from either
+     * the natural ICE-gather-done path (timer hasn't fired) or the
+     * watchdog itself (timer self-cancels — timerQueueCancelTimer is
+     * a no-op for the currently firing entry). */
+    if (session->non_trickle_answer_watchdog_id != MAX_UINT32 &&
+        session->client != NULL &&
+        IS_VALID_TIMER_QUEUE_HANDLE(session->client->timer_queue)) {
+        timerQueueCancelTimer(session->client->timer_queue,
+                              session->non_trickle_answer_watchdog_id,
+                              POINTER_TO_HANDLE(session));
+        session->non_trickle_answer_watchdog_id = MAX_UINT32;
+    }
+
+    ESP_LOGI(TAG, "Non-trickle ICE: Creating and sending answer for peer: %s", session->peer_id);
+
+    /* Mirror remote's trickle setting (FALSE here by definition) and
+     * re-create the answer so the SDP carries every candidate gathered so
+     * far — including the partial set when the watchdog fires. */
+    session->answer_session_description.useTrickleIce = session->remote_can_trickle_ice;
+    CHK_STATUS(createAnswer(session->peer_connection, &session->answer_session_description));
+
+    UINT32 answer_len = 0;
+    CHK_STATUS(serializeSessionDescriptionInit(&session->answer_session_description, NULL, &answer_len));
+    CHK(answer_len > 0, retStatus);
+
+    payload = (PCHAR) MEMALLOC(answer_len + 1);
+    CHK(payload != NULL, STATUS_NOT_ENOUGH_MEMORY);
+    CHK_STATUS(serializeSessionDescriptionInit(&session->answer_session_description, payload, &answer_len));
+    payload[answer_len] = '\0';
+
+    webrtc_message_t answer_msg = {0};
+    answer_msg.version = SIGNALING_MESSAGE_CURRENT_VERSION;
+    answer_msg.message_type = WEBRTC_MESSAGE_TYPE_ANSWER;
+    STRCPY(answer_msg.peer_client_id, session->peer_id);
+    SNPRINTF(answer_msg.correlation_id, MAX_CORRELATION_ID_LEN, "%llu_%zu",
+             GETTIME(), ATOMIC_INCREMENT(&session->correlation_id_postfix));
+    answer_msg.payload = payload;
+    answer_msg.payload_len = (UINT32) STRLEN(payload);
+
+    ESP_LOGI(TAG, "Sending non-trickle answer (gathering_done=%d) for peer: %s",
+             session->candidate_gathering_done ? 1 : 0, session->peer_id);
+    session->on_message_received(session->custom_data, &answer_msg);
+
+CleanUp:
+    SAFE_MEMFREE(payload);
+    CHK_LOG_ERR(retStatus);
+}
+
+/* KVS timer_queue one-shot callback. Runs on the KVS timer thread
+ * (KVS_TIMER_QUEUE_THREAD_SIZE = 8 KB stack), the same thread that
+ * already runs `kvs_pregenerateCertTimerCallback` — which calls
+ * createRtcCertificate(), heavier than the SDP serialization done here.
+ * Stack-pressure-wise this is a strictly safer dispatch than
+ * esp_timer's task (3.5 KB) and is also cross-platform: on the IDF
+ * Linux target esp_timer has no implementation, but timerQueue does.
+ * Returning STATUS_TIMER_QUEUE_STOP_SCHEDULING tells timerQueue not to
+ * re-arm (one-shot). */
+static STATUS kvs_non_trickle_answer_watchdog_cb(UINT32 timerId, UINT64 currentTime, UINT64 customData)
+{
+    UNUSED_PARAM(timerId);
+    UNUSED_PARAM(currentTime);
+    kvs_pc_session_t* session = (kvs_pc_session_t*) HANDLE_TO_POINTER(customData);
+    if (session == NULL || session->terminated) {
+        return STATUS_TIMER_QUEUE_STOP_SCHEDULING;
+    }
+    /* Mark the slot reusable before potentially destroying the session. */
+    session->non_trickle_answer_watchdog_id = MAX_UINT32;
+    if (session->candidate_gathering_done) {
+        /* Race: gather-done fired between the timer firing and this
+         * callback running — the natural path will have already sent
+         * the answer (or the atomic guard will block this one). */
+        return STATUS_TIMER_QUEUE_STOP_SCHEDULING;
+    }
+    ESP_LOGW(TAG, "Non-trickle ICE: gathering didn't complete in %u s — sending answer with partial candidates for peer: %s",
+             (UINT32)(NON_TRICKLE_ANSWER_WATCHDOG_DELAY / HUNDREDS_OF_NANOS_IN_A_SECOND), session->peer_id);
+    kvs_send_non_trickle_answer(session);
+    return STATUS_TIMER_QUEUE_STOP_SCHEDULING;
+}
+
 static VOID onIceCandidateHandler(UINT64 customData, PCHAR candidateJson)
 {
     STATUS retStatus = STATUS_SUCCESS;
@@ -1040,36 +1162,7 @@ static VOID onIceCandidateHandler(UINT64 customData, PCHAR candidateJson)
 
         /* Master (responder) in non-trickle mode: Send answer now with all candidates */
         if (!session->is_initiator && !session->remote_can_trickle_ice) {
-            ESP_LOGI(TAG, "Non-trickle ICE: Creating and sending answer now for peer: %s", session->peer_id);
-
-            /* Ensure useTrickleIce is still set correctly before creating final answer */
-            session->answer_session_description.useTrickleIce = session->remote_can_trickle_ice;
-
-            /* Re-create answer now that gathering is complete (SDP now contains all candidates) */
-            CHK_STATUS(createAnswer(session->peer_connection, &session->answer_session_description));
-
-            /* Send the answer */
-            if (session->on_message_received != NULL) {
-                webrtc_message_t answer_msg = {0};
-                UINT32 answer_len = 0;
-
-                CHK_STATUS(serializeSessionDescriptionInit(&session->answer_session_description, NULL, &answer_len));
-                PCHAR payload = (PCHAR)MEMALLOC(answer_len + 1);
-                CHK(payload != NULL, STATUS_NOT_ENOUGH_MEMORY);
-                CHK_STATUS(serializeSessionDescriptionInit(&session->answer_session_description, payload, &answer_len));
-
-                answer_msg.version = SIGNALING_MESSAGE_CURRENT_VERSION;
-                answer_msg.message_type = WEBRTC_MESSAGE_TYPE_ANSWER;
-                STRCPY(answer_msg.peer_client_id, session->peer_id);
-                SNPRINTF(answer_msg.correlation_id, MAX_CORRELATION_ID_LEN, "%llu_%zu",
-                         GETTIME(), ATOMIC_INCREMENT(&session->correlation_id_postfix));
-                answer_msg.payload = payload;
-                answer_msg.payload_len = (UINT32)STRLEN(payload);
-
-                ESP_LOGI(TAG, "Sending non-trickle answer with all candidates included for peer: %s", session->peer_id);
-                session->on_message_received(session->custom_data, &answer_msg);
-                SAFE_MEMFREE(payload);
-            }
+            kvs_send_non_trickle_answer(session);
         }
         /* Viewer in non-trickle mode: Signal waiting thread */
         else if (session->is_initiator && !session->client->trickleIce) {
@@ -1907,6 +2000,42 @@ static STATUS kvs_handleOffer(kvs_pc_session_t* session, webrtc_message_t* messa
     } else {
         ESP_LOGI(TAG, "Non-trickle ICE mode: Answer will be sent after candidate gathering completes for peer: %s",
                  session->peer_id);
+
+        /* Belt-and-braces: if upstream ICE gathering stalls (e.g. TURN
+         * allocation never returns under flaky networks / QEMU slirp /
+         * blocked outbound 443) we'd otherwise wait forever. Schedule a
+         * one-shot watchdog that force-sends the answer after
+         * NON_TRICKLE_ANSWER_WATCHDOG_DELAY with whatever candidates
+         * have already been gathered. The natural gather-done path also
+         * cancels this timer; either way `kvs_send_non_trickle_answer`
+         * uses an atomic guard to send exactly once. We piggyback on
+         * `client->timer_queue` (8 KB stack, already used for cert
+         * pre-generation and ICE pair stats) so this is cross-platform
+         * — esp_timer has no implementation on the IDF Linux target. */
+        ATOMIC_STORE_BOOL(&session->non_trickle_answer_sent, FALSE);
+        if (session->client != NULL && IS_VALID_TIMER_QUEUE_HANDLE(session->client->timer_queue)) {
+            /* Cancel any stale watchdog from a previous offer on this session. */
+            if (session->non_trickle_answer_watchdog_id != MAX_UINT32) {
+                timerQueueCancelTimer(session->client->timer_queue,
+                                      session->non_trickle_answer_watchdog_id,
+                                      POINTER_TO_HANDLE(session));
+                session->non_trickle_answer_watchdog_id = MAX_UINT32;
+            }
+            STATUS timerStatus = timerQueueAddTimer(session->client->timer_queue,
+                                                    NON_TRICKLE_ANSWER_WATCHDOG_DELAY,
+                                                    /* period = 0 => one-shot */ 0,
+                                                    kvs_non_trickle_answer_watchdog_cb,
+                                                    POINTER_TO_HANDLE(session),
+                                                    &session->non_trickle_answer_watchdog_id);
+            if (STATUS_FAILED(timerStatus)) {
+                ESP_LOGW(TAG, "timerQueueAddTimer for non-trickle answer watchdog failed: 0x%08x (peer %s)",
+                         (unsigned int)timerStatus, session->peer_id);
+                session->non_trickle_answer_watchdog_id = MAX_UINT32;
+            }
+        } else {
+            ESP_LOGW(TAG, "client timer_queue invalid; non-trickle answer watchdog NOT armed (peer %s)",
+                     session->peer_id);
+        }
     }
 
     // CRITICAL PARITY FIX: Start media threads exactly like legacy handleOffer

@@ -252,17 +252,27 @@ jobs:
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
         shell: bash
         run: |
-          # `-global driver=ssi_psram,property=size_mbytes,value=8`
-          # caps emulated PSRAM at 8 MB (matches real S3-WROOM-1U-N16R8).
-          # The qemu-xtensa esp_develop_9.2.2 build silently ignores
-          # this global today (tracked: gitlab idf/qemu MR !115); the
-          # firmware overlay disables PSRAM as a workaround.
+          # `-m 8M`: caps emulated PSRAM at 8 MB (matches real
+          # S3-WROOM-1U-N16R8). On these machines the `-m N` value is
+          # passed through to `ssi_psram.size_mbytes` in
+          # `esp32s3_machine_init_psram()`, so this is the natural way
+          # to set PSRAM size — no `-global ssi_psram,size_mbytes=N`
+          # needed (which qemu-xtensa esp_develop_9.2.2 silently
+          # clobbers anyway, see gitlab idf/qemu !115 discussion).
+          #
+          # `-global ssi_psram,is_octal=false`: idf.py qemu defaults
+          # `is_octal=true` for esp32s3, but our firmware is built with
+          # CONFIG_SPIRAM_MODE_QUAD=y (sdkconfig.defaults.qemu) because
+          # qemu-xtensa's octal-PSRAM emulation isn't reliable. Force
+          # quad here so the device model matches what the firmware
+          # talks to — without this, ROM bootloader runs and 2nd-stage
+          # is silent.
           export OUT_PATH="$GITHUB_WORKSPACE/qemu_recording.mkv"
           export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
           cd examples/webrtc_classic
           . /opt/esp/idf/export.sh
           "$GITHUB_WORKSPACE/tests/docker/ci/run_qemu_with_viewer.sh" \
-              "-global driver=ssi_psram,property=size_mbytes,value=8"
+              "-m 8M -global driver=ssi_psram,property=is_octal,value=false"
 
       - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
         if: steps.creds.outputs.skip != '1'
@@ -291,7 +301,9 @@ jobs:
             examples/webrtc_classic/qemu_serial.log
             python_viewer.log
             qemu_recording.mkv
+            qemu_recording.h264
             ffprobe.txt
+            ffprobe_raw.txt
           retention-days: 7
 
   # ESP32 (xtensa, original) variant of the QEMU integration test.
@@ -422,7 +434,9 @@ jobs:
             examples/webrtc_classic/qemu_serial.log
             python_viewer.log
             qemu_recording.mkv
+            qemu_recording.h264
             ffprobe.txt
+            ffprobe_raw.txt
           retention-days: 7
 
   # IDF Linux-target variant: drives the same SDK stack
@@ -529,5 +543,7 @@ jobs:
             examples/linux_test/linux_master.log
             python_viewer.log
             linux_recording.mkv
+            linux_recording.h264
             ffprobe.txt
+            ffprobe_raw.txt
           retention-days: 7

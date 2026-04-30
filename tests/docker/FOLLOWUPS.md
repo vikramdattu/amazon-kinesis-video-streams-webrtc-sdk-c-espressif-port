@@ -82,7 +82,9 @@ The remaining gap is purely **network reachability**:
 
 When building `espressif/qemu` from source on macOS with Homebrew toolchain (libgcrypt 1.12.1, gnutls 3.8.12, libslirp 4.9.1), the resulting `qemu-system-xtensa` reports `qemu-system-xtensa: warning: [AES] Error reading from GDMA buffer` at runtime. The IDF-shipped pre-built binary (built on Linux CI) does not have this issue.
 
-Workaround: use IDF's shipped binary for esp32 path testing (no patch needed; default 4 MB PSRAM matches QEMU's `ssi_psram` default). For esp32s3 with our `size_mbytes=8` patch, wait for upstream MR `idf/qemu` !115 to merge and IDF to re-publish the qemu-xtensa tool.
+Workaround: use IDF's shipped binary for esp32 path testing (no patch needed; default 4 MB PSRAM matches QEMU's `ssi_psram` default).
+
+**esp32s3 PSRAM sizing — resolved without an upstream patch.** Initial investigation in `idf/qemu` MR !115 attempted to fix `-global driver=ssi_psram,property=size_mbytes,value=N` being silently clobbered by the machine init code. Upon review, Ivan Grokhotkov pointed out that `-m N` on the esp32s3 machine is *already* the natural way to set PSRAM size — `esp32s3_machine_init_psram()` is called with `(uint32_t) (machine->ram_size / MiB)`. Verified locally with `qemu-system-xtensa -M esp32s3 -m 8M -global driver=ssi_psram,property=is_octal,value=false`: firmware reports `Found 8MB PSRAM device`, mmu_psram maps cleanly, `app_main()` reached. The `is_octal=false` knob is needed because `idf.py qemu` defaults it to `true` for esp32s3 but our QEMU firmware overlay (`sdkconfig.defaults.qemu`) deliberately uses `CONFIG_SPIRAM_MODE_QUAD=y` since qemu-xtensa's octal-PSRAM emulation isn't reliable. The firmware↔QEMU mode mismatch — not size_mbytes — was the actual root cause of the silent boot hang attributed to PSRAM size in the original report. CI workflow updated to use `-m 8M -global ...is_octal=false`; MR !115 closed.
 
 ## 5. ESP-IDF OpenETH driver allocates `emac` state via plain calloc
 

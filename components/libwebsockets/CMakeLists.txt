@@ -130,12 +130,27 @@ if(IDF_TARGET STREQUAL "linux")
     # the static archive only — turn shared off.
     set(LWS_WITH_SHARED OFF CACHE BOOL "" FORCE)
     set(LWS_WITH_STATIC ON CACHE BOOL "" FORCE)
-    # libwebsockets on the unix plat picks up `LWS_WITH_HTTP_STREAM_COMPRESSION`
-    # which in turn force-sets `LWS_WITH_ZLIB=1` and triggers a
-    # `find_package(ZLIB REQUIRED)` at configure time. The Espressif IDF
-    # release-v5.5 docker image (Debian-based) doesn't ship `zlib1g-dev`,
-    # so the find_package fails CMake configuration. KVS WSS signaling
-    # doesn't use permessage-deflate, so just disable both flags here.
+    # `CMakeLists-implied-options.txt` does an unconditional
+    # `set(LWS_WITH_ZLIB 1)` whenever extensions are enabled
+    # (`NOT LWS_WITHOUT_EXTENSIONS OR LWS_WITH_ZIP_FOPS`). That's a
+    # directory-scope variable assignment, so even a `CACHE ... FORCE`
+    # of `LWS_WITH_ZLIB=OFF` here gets shadowed once
+    # `add_subdirectory(libwebsockets)` runs.
+    #
+    # Once `LWS_WITH_ZLIB` is on, lws does `find_package(ZLIB REQUIRED)`
+    # at configure time. The Espressif IDF release-v5.5 docker image
+    # used by `linux_test_kvs` CI is Debian-based and doesn't ship
+    # `zlib1g-dev`, so the configure step fails before we even start
+    # building.
+    #
+    # KVS WSS signaling doesn't need permessage-deflate / zip fops, so
+    # disable extensions for the Linux IDF target — that's the only
+    # knob `CMakeLists-implied-options.txt` honours when deciding
+    # whether to require zlib. Override the FORCE-OFF set higher up in
+    # this file (line ~75) where we turn extensions on for the ESP
+    # path.
+    set(LWS_WITHOUT_EXTENSIONS ON CACHE INTERNAL "" FORCE)
+    set(LWS_WITH_ZIP_FOPS OFF CACHE BOOL "" FORCE)
     set(LWS_WITH_HTTP_STREAM_COMPRESSION OFF CACHE BOOL "" FORCE)
     set(LWS_WITH_ZLIB OFF CACHE BOOL "" FORCE)
 endif()

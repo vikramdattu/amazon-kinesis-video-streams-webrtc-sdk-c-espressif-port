@@ -1,0 +1,84 @@
+From ed9c8fe8375f1128442172be7017422a846c2dd3 Mon Sep 17 00:00:00 2001
+From: Vikram <v@e>
+Date: Thu, 30 Apr 2026 20:59:53 +0530
+Subject: [PATCH] DEBUG: trace writeFrame failure in QEMU
+
+---
+ src/source/PeerConnection/Rtp.c | 33 ++++++++++++++++++++++-----------
+ 1 file changed, 22 insertions(+), 11 deletions(-)
+
+diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
+index b5d3220d5a..529a35339b 100644
+--- a/src/source/PeerConnection/Rtp.c
++++ b/src/source/PeerConnection/Rtp.c
+@@ -344,24 +344,30 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+ 
+     rtpTimestamp += randomRtpTimeoffset;
+ 
+-    CHK_STATUS(rtpPayloadFunc(pKvsPeerConnection->MTU, (PBYTE) pFrame->frameData, pFrame->size, NULL, &(pPayloadArray->payloadLength), NULL,
+-                              &(pPayloadArray->payloadSubLenSize)));
++    retStatus = rtpPayloadFunc(pKvsPeerConnection->MTU, (PBYTE) pFrame->frameData, pFrame->size, NULL, &(pPayloadArray->payloadLength), NULL,
++                              &(pPayloadArray->payloadSubLenSize));
++    if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF: rtpPayloadFunc(size-only) failed 0x%08x mtu=%u frameSize=%u", retStatus, pKvsPeerConnection->MTU, pFrame->size); CHK(FALSE, retStatus); }
+     if (pPayloadArray->payloadLength > pPayloadArray->maxPayloadLength) {
+         SAFE_MEMFREE(pPayloadArray->payloadBuffer);
+         pPayloadArray->payloadBuffer = (PBYTE) MEMALLOC(pPayloadArray->payloadLength);
+         pPayloadArray->maxPayloadLength = pPayloadArray->payloadLength;
++        if (pPayloadArray->payloadBuffer == NULL) { DLOGE("DBG_WF: payloadBuffer MEMALLOC(%u) failed", pPayloadArray->payloadLength); }
+     }
+     if (pPayloadArray->payloadSubLenSize > pPayloadArray->maxPayloadSubLenSize) {
+         SAFE_MEMFREE(pPayloadArray->payloadSubLength);
+         pPayloadArray->payloadSubLength = (PUINT32) MEMALLOC(pPayloadArray->payloadSubLenSize * SIZEOF(UINT32));
+         pPayloadArray->maxPayloadSubLenSize = pPayloadArray->payloadSubLenSize;
++        if (pPayloadArray->payloadSubLength == NULL) { DLOGE("DBG_WF: payloadSubLength MEMALLOC(%u) failed", pPayloadArray->payloadSubLenSize * (UINT32)SIZEOF(UINT32)); }
+     }
+-    CHK_STATUS(rtpPayloadFunc(pKvsPeerConnection->MTU, (PBYTE) pFrame->frameData, pFrame->size, pPayloadArray->payloadBuffer,
+-                              &(pPayloadArray->payloadLength), pPayloadArray->payloadSubLength, &(pPayloadArray->payloadSubLenSize)));
++    retStatus = rtpPayloadFunc(pKvsPeerConnection->MTU, (PBYTE) pFrame->frameData, pFrame->size, pPayloadArray->payloadBuffer,
++                              &(pPayloadArray->payloadLength), pPayloadArray->payloadSubLength, &(pPayloadArray->payloadSubLenSize));
++    if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF: rtpPayloadFunc(fill) failed 0x%08x", retStatus); CHK(FALSE, retStatus); }
+     pPacketList = (PRtpPacket) MEMALLOC(pPayloadArray->payloadSubLenSize * SIZEOF(RtpPacket));
++    if (pPacketList == NULL) { DLOGE("DBG_WF: pPacketList MEMALLOC(%u * %u) failed", pPayloadArray->payloadSubLenSize, (UINT32)SIZEOF(RtpPacket)); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
+ 
+-    CHK_STATUS(constructRtpPackets(pPayloadArray, pKvsRtpTransceiver->sender.payloadType, pKvsRtpTransceiver->sender.sequenceNumber, rtpTimestamp,
+-                                   pKvsRtpTransceiver->sender.ssrc, pPacketList, pPayloadArray->payloadSubLenSize));
++    retStatus = constructRtpPackets(pPayloadArray, pKvsRtpTransceiver->sender.payloadType, pKvsRtpTransceiver->sender.sequenceNumber, rtpTimestamp,
++                                   pKvsRtpTransceiver->sender.ssrc, pPacketList, pPayloadArray->payloadSubLenSize);
++    if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF: constructRtpPackets failed 0x%08x", retStatus); CHK(FALSE, retStatus); }
+     pKvsRtpTransceiver->sender.sequenceNumber = GET_UINT16_SEQ_NUM(pKvsRtpTransceiver->sender.sequenceNumber + pPayloadArray->payloadSubLenSize);
+ 
+     bufferAfterEncrypt = (pKvsRtpTransceiver->sender.payloadType == pKvsRtpTransceiver->sender.rtxPayloadType);
+@@ -376,20 +382,25 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+             pRtpPacket->header.extensionPayload = (PBYTE) &extpayload;
+         }
+         // Get the required size first
+-        CHK_STATUS(createBytesFromRtpPacket(pRtpPacket, NULL, &packetLen));
++        retStatus = createBytesFromRtpPacket(pRtpPacket, NULL, &packetLen);
++        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: createBytesFromRtpPacket(size) failed 0x%08x", i, retStatus); CHK(FALSE, retStatus); }
+ 
+         // Account for SRTP authentication tag
+         allocSize = packetLen + SRTP_AUTH_TAG_OVERHEAD;
+-        CHK(NULL != (rawPacket = (PBYTE) MEMALLOC(allocSize)), STATUS_NOT_ENOUGH_MEMORY);
+-        CHK_STATUS(createBytesFromRtpPacket(pRtpPacket, rawPacket, &packetLen));
++        rawPacket = (PBYTE) MEMALLOC(allocSize);
++        if (rawPacket == NULL) { DLOGE("DBG_WF[%u]: rawPacket MEMALLOC(%u) failed", i, allocSize); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
++        retStatus = createBytesFromRtpPacket(pRtpPacket, rawPacket, &packetLen);
++        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: createBytesFromRtpPacket(fill) failed 0x%08x packetLen=%u allocSize=%u", i, retStatus, packetLen, allocSize); CHK(FALSE, retStatus); }
+ 
+         if (!bufferAfterEncrypt) {
+             pRtpPacket->pRawPacket = rawPacket;
+             pRtpPacket->rawPacketLength = packetLen;
+-            CHK_STATUS(rtpRollingBufferAddRtpPacket(pKvsRtpTransceiver->sender.packetBuffer, pRtpPacket));
++            retStatus = rtpRollingBufferAddRtpPacket(pKvsRtpTransceiver->sender.packetBuffer, pRtpPacket);
++            if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: rtpRollingBufferAddRtpPacket(pre) failed 0x%08x rawPktLen=%u", i, retStatus, packetLen); CHK(FALSE, retStatus); }
+         }
+ 
+-        CHK_STATUS(encryptRtpPacket(pKvsPeerConnection->pSrtpSession, rawPacket, (PINT32) &packetLen));
++        retStatus = encryptRtpPacket(pKvsPeerConnection->pSrtpSession, rawPacket, (PINT32) &packetLen);
++        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: encryptRtpPacket failed 0x%08x", i, retStatus); CHK(FALSE, retStatus); }
+         sendStatus = iceAgentSendPacket(pKvsPeerConnection->pIceAgent, rawPacket, packetLen);
+         if (sendStatus == STATUS_SEND_DATA_FAILED) {
+             packetsDiscardedOnSend++;
+-- 
+2.39.5 (Apple Git-154)
+

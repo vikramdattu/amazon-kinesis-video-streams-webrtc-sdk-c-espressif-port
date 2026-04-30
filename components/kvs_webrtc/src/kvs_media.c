@@ -264,7 +264,7 @@ static PVOID kvs_global_video_sender_thread(PVOID args)
             // Get frame from camera/file (wait up to frame_duration_ms for a frame)
             UINT32 timeout_ms = (UINT32)(frame_duration_100ns / HUNDREDS_OF_NANOS_IN_A_MILLISECOND);
             esp_err_t get_ret = video_capture->get_frame(g_global_media.video_handle, &video_frame, timeout_ms);
-            if (get_ret == ESP_OK && video_frame != NULL) {
+            if (get_ret == ESP_OK && video_frame != NULL && video_frame->len > 0) {
                 frame.frameData = video_frame->buffer;
                 frame.size = video_frame->len;
                 frame.flags = (video_frame->type == VIDEO_FRAME_TYPE_I) ? FRAME_FLAG_KEY_FRAME : FRAME_FLAG_NONE;
@@ -449,7 +449,7 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
 
         if (audio_capture != NULL) {
             // Get frame from microphone/file (wait up to frame_duration_ms)
-            if (audio_capture->get_frame(g_global_media.audio_handle, &audio_frame, frame_duration_ms) == ESP_OK && audio_frame != NULL) {
+            if (audio_capture->get_frame(g_global_media.audio_handle, &audio_frame, frame_duration_ms) == ESP_OK && audio_frame != NULL && audio_frame->len > 0) {
                 frame.frameData = audio_frame->buffer;
                 frame.size = audio_frame->len;
                 frame_available = TRUE;

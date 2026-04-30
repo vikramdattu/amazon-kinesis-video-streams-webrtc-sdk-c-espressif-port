@@ -130,6 +130,14 @@ if(IDF_TARGET STREQUAL "linux")
     # the static archive only — turn shared off.
     set(LWS_WITH_SHARED OFF CACHE BOOL "" FORCE)
     set(LWS_WITH_STATIC ON CACHE BOOL "" FORCE)
+    # libwebsockets on the unix plat picks up `LWS_WITH_HTTP_STREAM_COMPRESSION`
+    # which in turn force-sets `LWS_WITH_ZLIB=1` and triggers a
+    # `find_package(ZLIB REQUIRED)` at configure time. The Espressif IDF
+    # release-v5.5 docker image (Debian-based) doesn't ship `zlib1g-dev`,
+    # so the find_package fails CMake configuration. KVS WSS signaling
+    # doesn't use permessage-deflate, so just disable both flags here.
+    set(LWS_WITH_HTTP_STREAM_COMPRESSION OFF CACHE BOOL "" FORCE)
+    set(LWS_WITH_ZLIB OFF CACHE BOOL "" FORCE)
 endif()
 
 # Add libwebsockets as a subdirectory

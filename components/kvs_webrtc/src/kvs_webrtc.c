@@ -417,8 +417,16 @@ static WEBRTC_STATUS kvs_pc_init(void *pc_cfg, void **ppPeerConnectionClient)
     client_data->rtc_configuration.kvsRtcConfiguration.iceCandidateNominationTimeout = 15 * HUNDREDS_OF_NANOS_IN_A_SECOND;
     client_data->rtc_configuration.kvsRtcConfiguration.iceConnectionCheckPollingInterval = 100 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
 
-    // Set the ICE mode
+    // Set the ICE mode. CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY forces
+    // TURN-only — required for environments where the device's host /
+    // srflx candidates are unreachable from the peer (qemu slirp NAT,
+    // CGNAT on cellular). See kvs_webrtc/Kconfig.projbuild.
+#ifdef CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY
+    client_data->rtc_configuration.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+    ESP_LOGI(TAG, "ICE transport policy: RELAY-only (TURN required)");
+#else
     client_data->rtc_configuration.iceTransportPolicy = ICE_TRANSPORT_POLICY_ALL;
+#endif
 
     // Initialize certificate pre-generation
     CHK_STATUS(kvs_initializeCertificatePregeneration(client_data));
@@ -1787,8 +1795,13 @@ static STATUS kvs_initializePeerConnection(kvs_pc_client_t* client, PRtcPeerConn
     // Enable interface filtering to handle IPv6 properly
     configuration.kvsRtcConfiguration.iceSetInterfaceFilterFunc = kvs_sampleFilterNetworkInterfaces;
 
-    // Set the ICE mode - prefer ALL; RELAY-only can be forced by upstream if needed
+    // Set the ICE mode. CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY forces
+    // TURN-only here too — keep both code paths in sync.
+#ifdef CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY
+    configuration.iceTransportPolicy = ICE_TRANSPORT_POLICY_RELAY;
+#else
     configuration.iceTransportPolicy = ICE_TRANSPORT_POLICY_ALL;
+#endif
 
     // Configure ICE servers from client config when provided; fallback to public STUN
     if (client->config.ice_servers != NULL && client->config.ice_server_count > 0) {

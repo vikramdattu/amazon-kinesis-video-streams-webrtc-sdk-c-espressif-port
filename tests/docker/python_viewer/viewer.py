@@ -112,13 +112,59 @@ _raw_sink = _RawH264Sink(RAW_H264_PATH)
 _orig_h264_decode = _aiortc_h264.H264Decoder.decode
 
 
+def _has_idr_with_params(data: bytes) -> bool:
+    """Return True if `data` (Annex-B) contains an SPS, a PPS, and an
+    IDR NAL — i.e. enough state for libavcodec to start decoding from
+    scratch. We gate the real decoder on this so a viewer that joined
+    mid-stream doesn't feed pre-IDR slices to libavcodec, which on
+    aiortc's embedded copy puts the codec context into a state from
+    which it never recovers (it stops emitting frames even after a
+    valid IDR finally arrives). ffmpeg CLI happily recovers from the
+    same byte stream, so the master output is correct — this is purely
+    a libavcodec-statefulness issue inside aiortc."""
+    have = {7: False, 8: False, 5: False}
+    n = len(data)
+    i = 0
+    while i < n - 2:
+        if data[i] == 0 and data[i + 1] == 0:
+            if i + 3 < n and data[i + 2] == 0 and data[i + 3] == 1:
+                t = data[i + 4] & 0x1F if i + 4 < n else 0
+                i += 4
+            elif data[i + 2] == 1:
+                t = data[i + 3] & 0x1F if i + 3 < n else 0
+                i += 3
+            else:
+                i += 1
+                continue
+            if t in have:
+                have[t] = True
+                if all(have.values()):
+                    return True
+            continue
+        i += 1
+    return False
+
+
+_seen_idr_params = False
+
+
 def _decode_with_dump(self, encoded_frame):  # type: ignore[no-untyped-def]
+    global _seen_idr_params
     data = getattr(encoded_frame, "data", None)
     if data:
         try:
             _raw_sink.write(bytes(data))
         except Exception as exc:  # never let the dump break decoding
             log.warning("raw h264 dump write failed: %s", exc)
+        if not _seen_idr_params:
+            if _has_idr_with_params(bytes(data)):
+                _seen_idr_params = True
+                log.info("H264Decoder: first SPS+PPS+IDR seen — enabling libavcodec from this AU")
+            else:
+                # Skip libavcodec until we have a valid keyframe with
+                # SPS/PPS in the same access unit. The raw dump still
+                # captures everything for offline verification.
+                return []
     return _orig_h264_decode(self, encoded_frame)
 
 

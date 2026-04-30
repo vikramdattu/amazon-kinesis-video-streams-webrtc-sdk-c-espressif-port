@@ -14,4 +14,21 @@ menu "KVS WebRTC Configuration"
             This enables the use of ESP certificate bundle for CA verification,
             eliminating the need for certificate files on the filesystem.
             Recommended for ESP platforms to avoid certificate management complexity.
+
+    config KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY
+        bool "Force ICE transport policy to RELAY only (use TURN exclusively)"
+        default n
+        help
+            Force the ICE Agent to use TURN relay candidates only — host and
+            srflx candidates are not advertised. This is required when the
+            device is behind a one-way NAT that the remote peer cannot
+            reach back into (e.g. qemu-xtensa user-mode networking / slirp,
+            CGNAT on cellular). Both peers then connect through the AWS TURN
+            relay, which only needs outbound connectivity from each side.
+
+            Set this with `CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y` in
+            sdkconfig.defaults.qemu (or any deployment overlay where host
+            candidates are unreachable from the remote peer's perspective).
+
+            Default: n (ICE_TRANSPORT_POLICY_ALL — host + srflx + relay).
 endmenu

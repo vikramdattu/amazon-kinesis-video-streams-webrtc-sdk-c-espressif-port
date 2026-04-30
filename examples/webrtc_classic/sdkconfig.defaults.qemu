@@ -76,6 +76,16 @@ CONFIG_BT_ENABLED=n
 CONFIG_BT_NIMBLE_ENABLED=n
 CONFIG_BT_CONTROLLER_ENABLED=n
 
+# Force ICE to use TURN relay only. qemu-xtensa's user-mode networking
+# (slirp) provides outbound NAT but no inbound reachability — host and
+# srflx candidates the master gathers (typically 10.0.2.15:N) cannot
+# be dialed back into the QEMU guest from the python viewer running on
+# the host (or in the espressif/idf CI container). Both peers can
+# reach the AWS TURN relay outbound, so RELAY-only sidesteps the slirp
+# NAT entirely. Costs one extra hop in latency vs direct, but that's
+# the trade-off for an integration test inside QEMU.
+CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
+
 # Provide WiFi-style fallback creds in case the Kconfig-fallback path
 # in app_wifi_prov_init() runs (it shouldn't with USE_OPENETH=y, but
 # it's belt-and-braces).

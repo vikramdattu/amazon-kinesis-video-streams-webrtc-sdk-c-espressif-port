@@ -501,6 +501,38 @@ jobs:
           apt-get update && apt-get install -y --no-install-recommends ffmpeg
           pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
 
+      - name: Validate AWS credentials with sts:GetCallerIdentity
+        if: steps.creds.outputs.skip != '1'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_DEFAULT_REGION }}
+        shell: bash
+        run: |
+          # Catch expired/invalid creds early. Without this, both the
+          # python viewer (boto3) and the C master (lws+SigV4) fail
+          # ~30 seconds in with cascading "UnrecognizedClientException"
+          # / "Call Failed with Status: 0x5d000034" errors that don't
+          # mention credentials. Surface the real reason up front.
+          . /opt/esp/idf/export.sh
+          python3 -c "
+          import sys, boto3, botocore
+          try:
+              ident = boto3.client('sts').get_caller_identity()
+          except botocore.exceptions.ClientError as e:
+              code = e.response.get('Error', {}).get('Code', '?')
+              msg = e.response.get('Error', {}).get('Message', str(e))
+              print(f'::error title=AWS credentials invalid::sts:GetCallerIdentity rejected: {code}: {msg}')
+              print()
+              print('Fix: refresh the AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY')
+              print('     (and AWS_SESSION_TOKEN if using temp creds) repository')
+              print('     secrets. Long-term IAM user keys (AKIA prefix) avoid')
+              print('     the every-few-hours expiration of temp ASIA creds.')
+              sys.exit(1)
+          print(f'AWS account: {ident[\"Account\"]}, ARN: {ident[\"Arn\"]}')
+          "
+
       - name: Build linux_test (IDF Linux target)
         if: steps.creds.outputs.skip != '1'
         env:

@@ -130,23 +130,26 @@ CONFIG_KVS_WEBRTC_FILTER_TURN_UDP=y
 # on the AES peripheral, the AES "done" interrupt never fires under
 # qemu, and TLS bulk encryption stalls forever:
 #   `qemu-system-xtensa: warning: [AES] Error reading from GDMA buffer`
-# Software AES is plenty fast on the bulk-encrypt path — only the
-# initial RSA verify is the painful one (see HW MPI below).
+# Software AES is plenty fast on the bulk-encrypt path.
 CONFIG_MBEDTLS_HARDWARE_AES=n
 #
-# HW SHA and HW MPI are SEPARATE peripherals from HW AES — they don't
-# go through GDMA, so the qemu emulation gap above doesn't apply.
-# Enabling them is critical for QEMU performance because:
-#  - RSA modular-exponentiation in software on emulated xtensa takes
-#    >30 s per certificate verify (we observed a 60 s TLS handshake
-#    with HW MPI off, exceeding the default 30 s ICE check timeout
-#    and breaking the TURN-over-TLS path).
-#  - Each TLS handshake hashes the certificate chain via SHA — sw
-#    SHA on emulated xtensa is also slow.
-# With HW MPI + HW SHA on, the same handshake completes in ~3-5 s
-# even under qemu emulation (the peripherals are simple enough that
-# qemu emulates them correctly).
-CONFIG_MBEDTLS_HARDWARE_SHA=y
+# Hardware SHA: disabled. Same GDMA-emulation gap as HW AES — qemu
+# emits `[SHA] Error reading from GDMA buffer` and the resulting
+# (wrong) hash makes the RSA signature verify fail with 0x4380
+# (MBEDTLS_ERR_RSA_VERIFY_FAILED), which then cascades:
+#   esp-x509-crt-bundle: Certificate matched but signature
+#   verification failed
+# Software SHA is much cheaper than RSA so this isn't a perf
+# disaster — handshake stays bounded.
+CONFIG_MBEDTLS_HARDWARE_SHA=n
+#
+# Hardware MPI: KEEP ENABLED. The MPI peripheral is the big
+# performance win because RSA modular-exponentiation is what makes
+# software TLS handshake glacial under qemu emulation (we observed
+# 60 s with HW MPI off, exceeding the 30 s ICE check timeout). HW
+# MPI does NOT go through GDMA — different peripheral, qemu emulates
+# it correctly. Drops handshake to ~5-8 s, fits comfortably inside
+# the ICE budget.
 CONFIG_MBEDTLS_HARDWARE_MPI=y
 
 # Provide WiFi-style fallback creds in case the Kconfig-fallback path

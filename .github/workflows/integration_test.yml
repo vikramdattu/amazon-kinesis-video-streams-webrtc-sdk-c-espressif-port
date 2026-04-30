@@ -331,15 +331,18 @@ jobs:
     runs-on: ubuntu-22.04
     container: espressif/idf:release-v5.5
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
-    # Same rationale as esp32s3_qemu_kvs_test — slirp + TURN stabilisation
-    # is in flight under #13. linux_test_kvs is the authoritative gate.
+    # esp32 (Xtensa LX6) under qemu-xtensa is significantly slower than
+    # esp32s3 (LX7 + PIE): single-core, no PIE/SIMD, slower internal-RAM
+    # path. ICE+DTLS handshake reaches CONNECTED ~50-90 s after offer,
+    # so we run a longer window than the s3 job. linux_test_kvs is the
+    # authoritative gate; this job is informational.
     continue-on-error: true
     timeout-minutes: 45
 
     env:
       KVS_CHANNEL_NAME: ${{ secrets.KVS_QEMU_CHANNEL_NAME && format('{0}-esp32', secrets.KVS_QEMU_CHANNEL_NAME) || format('espressif-port-qemu-esp32-{0}', github.run_id) }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
-      TEST_DURATION_SEC: 60
+      TEST_DURATION_SEC: 120
 
     steps:
       - uses: actions/checkout@v4

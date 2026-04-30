@@ -15,9 +15,13 @@ set -euo pipefail
 
 mkdir -p "$(dirname "$OUT_PATH")"
 
+# Allow callers to override the build dir, e.g. for the relay-only
+# probe job that builds into `./build_relay/`. Defaults to `./build/`.
+LINUX_TEST_BUILD_DIR="${LINUX_TEST_BUILD_DIR:-./build}"
+
 # Master in background; linux_test's app_main loops for $TEST_DURATION_SEC
 # then exit(0)s.
-( ./build/linux_test.elf > linux_master.log 2>&1 & echo $! > master.pid )
+( "$LINUX_TEST_BUILD_DIR/linux_test.elf" > linux_master.log 2>&1 & echo $! > master.pid )
 
 # Boot, time-sync, signaling-init typically lands by ~15 s on a
 # Linux runner (no QEMU emulation overhead).

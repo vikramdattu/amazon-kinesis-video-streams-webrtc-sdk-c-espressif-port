@@ -37,6 +37,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LINUX_TEST_DIR="$REPO_ROOT/examples/linux_test"
+LINUX_TEST_BUILD_DIR="${LINUX_TEST_BUILD_DIR:-$LINUX_TEST_DIR/build}"
 SDK_DIR="$REPO_ROOT/amazon-kinesis-video-streams-webrtc-sdk-c"
 
 : "${AWS_ACCESS_KEY_ID:?must be set in env (export AWS_ACCESS_KEY_ID=...)}"
@@ -69,11 +70,12 @@ export GITHUB_WORKSPACE="$REPO_ROOT"   # the CI script reads this for the viewer
 AIORTC_VENV="${AIORTC_VENV:-$TMP/aiortc_venv}"
 
 # 1) linux_test.elf must be built (idf.py build under examples/linux_test).
-if [ ! -x "$LINUX_TEST_DIR/build/linux_test.elf" ]; then
-    echo "Error: $LINUX_TEST_DIR/build/linux_test.elf not found." >&2
+if [ ! -x "$LINUX_TEST_BUILD_DIR/linux_test.elf" ]; then
+    echo "Error: $LINUX_TEST_BUILD_DIR/linux_test.elf not found." >&2
     echo "       Build it first:" >&2
     echo "         . ~/work/esp-idf/export.sh" >&2
     echo "         cd $LINUX_TEST_DIR && idf.py --preview set-target linux && idf.py build" >&2
+    echo "       Override with LINUX_TEST_BUILD_DIR=<dir> (e.g. build_relay)." >&2
     exit 2
 fi
 

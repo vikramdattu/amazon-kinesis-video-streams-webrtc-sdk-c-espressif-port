@@ -123,18 +123,31 @@ CONFIG_KVS_WEBRTC_FILTER_TURN_UDP=y
 # because the IDF Linux target already has a system CA bundle at a
 # well-known path and no esp_crt_bundle equivalent.
 
-# Force mbedtls to use software crypto, not the ESP32-S3 hardware AES /
-# SHA / MPI peripherals. qemu-xtensa's emulation of these has known
-# gaps — most visibly `qemu-system-xtensa: warning: [AES] Error reading
-# from GDMA buffer` when the firmware drives AES via GDMA, which on
-# real hardware is the path TLS/DTLS handshake uses for bulk crypto.
-# The TLS handshake to KVS signaling endpoints silently hangs as the
-# AES driver waits for completion that QEMU never delivers. Software
-# fallback is slower but actually completes, which is what we need
-# in an emulated CI environment.
+# mbedtls hardware-acceleration knobs for QEMU.
+#
+# Hardware AES is force-disabled because qemu-xtensa's AES-GDMA
+# emulation has a known gap — the firmware enqueues a DMA descriptor
+# on the AES peripheral, the AES "done" interrupt never fires under
+# qemu, and TLS bulk encryption stalls forever:
+#   `qemu-system-xtensa: warning: [AES] Error reading from GDMA buffer`
+# Software AES is plenty fast on the bulk-encrypt path — only the
+# initial RSA verify is the painful one (see HW MPI below).
 CONFIG_MBEDTLS_HARDWARE_AES=n
-CONFIG_MBEDTLS_HARDWARE_SHA=n
-CONFIG_MBEDTLS_HARDWARE_MPI=n
+#
+# HW SHA and HW MPI are SEPARATE peripherals from HW AES — they don't
+# go through GDMA, so the qemu emulation gap above doesn't apply.
+# Enabling them is critical for QEMU performance because:
+#  - RSA modular-exponentiation in software on emulated xtensa takes
+#    >30 s per certificate verify (we observed a 60 s TLS handshake
+#    with HW MPI off, exceeding the default 30 s ICE check timeout
+#    and breaking the TURN-over-TLS path).
+#  - Each TLS handshake hashes the certificate chain via SHA — sw
+#    SHA on emulated xtensa is also slow.
+# With HW MPI + HW SHA on, the same handshake completes in ~3-5 s
+# even under qemu emulation (the peripherals are simple enough that
+# qemu emulates them correctly).
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_HARDWARE_MPI=y
 
 # Provide WiFi-style fallback creds in case the Kconfig-fallback path
 # in app_wifi_prov_init() runs (it shouldn't with USE_OPENETH=y, but

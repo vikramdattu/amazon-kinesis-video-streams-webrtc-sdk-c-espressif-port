@@ -1,18 +1,17 @@
-From 69e80470f4fbbf8bbebbb813f7c0022a31e780ea Mon Sep 17 00:00:00 2001
+From ba336413de90967aff658c695279173cf7b8500b Mon Sep 17 00:00:00 2001
 From: Vikram <v@e>
-Date: Thu, 30 Apr 2026 21:17:00 +0530
-Subject: [PATCH] DEBUG: trace writeFrame failure incl. seq/ssrc on
- encryptRtpPacket
+Date: Thu, 30 Apr 2026 21:30:08 +0530
+Subject: [PATCH] DEBUG: trace writeFrame failure incl. seq/ssrc/payloadLen
 
 ---
- src/source/PeerConnection/Rtp.c | 36 +++++++++++++++++++++++----------
- 1 file changed, 25 insertions(+), 11 deletions(-)
+ src/source/PeerConnection/Rtp.c | 46 ++++++++++++++++++++++++---------
+ 1 file changed, 34 insertions(+), 12 deletions(-)
 
 diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
-index a098140fc6..2e42cf4f52 100644
+index a098140fc6..679ba70de2 100644
 --- a/src/source/PeerConnection/Rtp.c
 +++ b/src/source/PeerConnection/Rtp.c
-@@ -340,24 +340,30 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+@@ -340,24 +340,34 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
  
      rtpTimestamp += randomRtpTimeoffset;
  
@@ -39,30 +38,39 @@ index a098140fc6..2e42cf4f52 100644
 +                              &(pPayloadArray->payloadLength), pPayloadArray->payloadSubLength, &(pPayloadArray->payloadSubLenSize));
 +    if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF: rtpPayloadFunc(fill) failed 0x%08x", retStatus); CHK(FALSE, retStatus); }
      pPacketList = (PRtpPacket) MEMALLOC(pPayloadArray->payloadSubLenSize * SIZEOF(RtpPacket));
-+    if (pPacketList == NULL) { DLOGE("DBG_WF: pPacketList MEMALLOC(%u * %u) failed", pPayloadArray->payloadSubLenSize, (UINT32)SIZEOF(RtpPacket)); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
- 
+-
 -    CHK_STATUS(constructRtpPackets(pPayloadArray, pKvsRtpTransceiver->sender.payloadType, pKvsRtpTransceiver->sender.sequenceNumber, rtpTimestamp,
 -                                   pKvsRtpTransceiver->sender.ssrc, pPacketList, pPayloadArray->payloadSubLenSize));
++    if (pPacketList == NULL) { DLOGE("DBG_WF: pPacketList MEMALLOC(%u * %u) failed", pPayloadArray->payloadSubLenSize, (UINT32)SIZEOF(RtpPacket)); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
++
++    DLOGE("DBG_WF: pre-construct payloadLength=%u payloadSubLenSize=%u maxPayloadLen=%u maxSubLen=%u frameSize=%u kind=%d",
++          pPayloadArray->payloadLength, pPayloadArray->payloadSubLenSize,
++          pPayloadArray->maxPayloadLength, pPayloadArray->maxPayloadSubLenSize,
++          pFrame->size, (int)pKvsRtpTransceiver->sender.track.kind);
 +    retStatus = constructRtpPackets(pPayloadArray, pKvsRtpTransceiver->sender.payloadType, pKvsRtpTransceiver->sender.sequenceNumber, rtpTimestamp,
 +                                   pKvsRtpTransceiver->sender.ssrc, pPacketList, pPayloadArray->payloadSubLenSize);
 +    if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF: constructRtpPackets failed 0x%08x", retStatus); CHK(FALSE, retStatus); }
      pKvsRtpTransceiver->sender.sequenceNumber = GET_UINT16_SEQ_NUM(pKvsRtpTransceiver->sender.sequenceNumber + pPayloadArray->payloadSubLenSize);
  
      bufferAfterEncrypt = (pKvsRtpTransceiver->sender.payloadType == pKvsRtpTransceiver->sender.rtxPayloadType);
-@@ -372,20 +378,28 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+@@ -372,20 +382,32 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
              pRtpPacket->header.extensionPayload = (PBYTE) &extpayload;
          }
          // Get the required size first
 -        CHK_STATUS(createBytesFromRtpPacket(pRtpPacket, NULL, &packetLen));
 +        retStatus = createBytesFromRtpPacket(pRtpPacket, NULL, &packetLen);
 +        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: createBytesFromRtpPacket(size) failed 0x%08x", i, retStatus); CHK(FALSE, retStatus); }
++        DLOGE("DBG_WF[%u]: pre-alloc packetLen=%u pRtpPacket=%p header.payloadLength=%u extension=%d csrcCount=%u extLen=%u",
++              i, packetLen, pRtpPacket, pRtpPacket->payloadLength,
++              (int)pRtpPacket->header.extension, (UINT32)pRtpPacket->header.csrcCount,
++              (UINT32)pRtpPacket->header.extensionLength);
  
          // Account for SRTP authentication tag
          allocSize = packetLen + SRTP_AUTH_TAG_OVERHEAD;
 -        CHK(NULL != (rawPacket = (PBYTE) MEMALLOC(allocSize)), STATUS_NOT_ENOUGH_MEMORY);
 -        CHK_STATUS(createBytesFromRtpPacket(pRtpPacket, rawPacket, &packetLen));
 +        rawPacket = (PBYTE) MEMALLOC(allocSize);
-+        if (rawPacket == NULL) { DLOGE("DBG_WF[%u]: rawPacket MEMALLOC(%u) failed", i, allocSize); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
++        if (rawPacket == NULL) { DLOGE("DBG_WF[%u]: rawPacket MEMALLOC(%u) failed packetLen=%u payloadLen=%u", i, allocSize, packetLen, pRtpPacket->payloadLength); CHK(FALSE, STATUS_NOT_ENOUGH_MEMORY); }
 +        retStatus = createBytesFromRtpPacket(pRtpPacket, rawPacket, &packetLen);
 +        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: createBytesFromRtpPacket(fill) failed 0x%08x packetLen=%u allocSize=%u", i, retStatus, packetLen, allocSize); CHK(FALSE, retStatus); }
  

@@ -1,17 +1,18 @@
-From ed9c8fe8375f1128442172be7017422a846c2dd3 Mon Sep 17 00:00:00 2001
+From 69e80470f4fbbf8bbebbb813f7c0022a31e780ea Mon Sep 17 00:00:00 2001
 From: Vikram <v@e>
-Date: Thu, 30 Apr 2026 20:59:53 +0530
-Subject: [PATCH] DEBUG: trace writeFrame failure in QEMU
+Date: Thu, 30 Apr 2026 21:17:00 +0530
+Subject: [PATCH] DEBUG: trace writeFrame failure incl. seq/ssrc on
+ encryptRtpPacket
 
 ---
- src/source/PeerConnection/Rtp.c | 33 ++++++++++++++++++++++-----------
- 1 file changed, 22 insertions(+), 11 deletions(-)
+ src/source/PeerConnection/Rtp.c | 36 +++++++++++++++++++++++----------
+ 1 file changed, 25 insertions(+), 11 deletions(-)
 
 diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
-index b5d3220d5a..529a35339b 100644
+index a098140fc6..2e42cf4f52 100644
 --- a/src/source/PeerConnection/Rtp.c
 +++ b/src/source/PeerConnection/Rtp.c
-@@ -344,24 +344,30 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+@@ -340,24 +340,30 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
  
      rtpTimestamp += randomRtpTimeoffset;
  
@@ -48,7 +49,7 @@ index b5d3220d5a..529a35339b 100644
      pKvsRtpTransceiver->sender.sequenceNumber = GET_UINT16_SEQ_NUM(pKvsRtpTransceiver->sender.sequenceNumber + pPayloadArray->payloadSubLenSize);
  
      bufferAfterEncrypt = (pKvsRtpTransceiver->sender.payloadType == pKvsRtpTransceiver->sender.rtxPayloadType);
-@@ -376,20 +382,25 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+@@ -372,20 +378,28 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
              pRtpPacket->header.extensionPayload = (PBYTE) &extpayload;
          }
          // Get the required size first
@@ -74,8 +75,11 @@ index b5d3220d5a..529a35339b 100644
          }
  
 -        CHK_STATUS(encryptRtpPacket(pKvsPeerConnection->pSrtpSession, rawPacket, (PINT32) &packetLen));
++        DLOGE("DBG_WF[%u]: pre-protect seq=%u ssrc=%u pt=%u packetLen=%u sndSeq=%u", i,
++              (UINT32)pRtpPacket->header.sequenceNumber, (UINT32)pRtpPacket->header.ssrc, (UINT32)pRtpPacket->header.payloadType,
++              packetLen, (UINT32)pKvsRtpTransceiver->sender.sequenceNumber);
 +        retStatus = encryptRtpPacket(pKvsPeerConnection->pSrtpSession, rawPacket, (PINT32) &packetLen);
-+        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: encryptRtpPacket failed 0x%08x", i, retStatus); CHK(FALSE, retStatus); }
++        if (STATUS_FAILED(retStatus)) { DLOGE("DBG_WF[%u]: encryptRtpPacket failed 0x%08x seq=%u ssrc=%u", i, retStatus, (UINT32)pRtpPacket->header.sequenceNumber, (UINT32)pRtpPacket->header.ssrc); CHK(FALSE, retStatus); }
          sendStatus = iceAgentSendPacket(pKvsPeerConnection->pIceAgent, rawPacket, packetLen);
          if (sendStatus == STATUS_SEND_DATA_FAILED) {
              packetsDiscardedOnSend++;

@@ -163,7 +163,80 @@ finished → viewer reports `Track received` (video + audio) →
 `Applied SDP_ANSWER` → `ICE connection state: completed`. DTLS
 handshake completion + SRTP frame flow is the next gap.
 
-## 7d. linux_test: ICE nomination times out → no media frames flow
+## 7d-resolved. linux_test: ICE nomination + DTLS verification fixed; RTP frames flowing
+
+**Status:** **resolved** for transport. Decode-side warnings remain
+(see new #7e).
+
+What was wrong, in order of discovery:
+
+1. **`STATUS_ICE_FAILED_TO_NOMINATE_CANDIDATE_PAIR (0x5a000013)`** —
+   aiortc's default `bundlePolicy=BALANCED` emits separate
+   `a=ice-ufrag` / `a=ice-pwd` per m-line; the C SDK assumes
+   BUNDLE and signs binding requests with one credential pair. Fixed
+   by setting `RTCBundlePolicy.MAX_BUNDLE` in the Python viewer.
+2. **`STATUS_SSL_REMOTE_CERTIFICATE_VERIFICATION_FAILED (0x59000003)`** —
+   aiortc emits `a=fingerprint:` for sha-256/384/512; the C SDK's
+   loop unconditionally `STRNCPY`'d each one and the last (sha-512)
+   won, but `dtlsCertificateFingerprint` produces SHA-256.
+   `patches/0010-...` filters the fingerprint loop on
+   `STRNCMP("sha-256 ", 8) == 0`.
+3. (Earlier) heap corruption from static-stack mis-sizing,
+   pthread-stack too small, and SignalingMessage ABI mismatch.
+4. (Earlier) TURN-TLS CA path on host (`patches/0009-...`).
+
+Master now reaches:
+
+```
+ICE_AGENT_STATE_NOMINATING → ICE_AGENT_STATE_READY
+iceAgentReadyStateSetup(): Selected pair … host. host.
+DTLS initialization completion: 118 ms
+peerConnectionStateChangedWrapper: state=2 (CONNECTED)
+```
+
+Viewer reports `PC connection state: connected` followed by H.264
+RTP packets arriving (see #7e).
+
+## 7e. linux_test: aiortc H264Decoder rejects every packet from master
+
+**Status:** open. Cosmetic (transport works) but blocks
+auto-verifying the MKV from the integration test.
+
+End-to-end RTP is flowing — aiortc receives the packets, calls
+`H264Decoder()` for each, and prints:
+
+```
+WARNING aiortc.codecs.h264: H264Decoder() failed to decode, skipping
+package: [Errno 1094995529] Invalid data found when processing
+input: 'avcodec_send_packet()'
+```
+
+`MediaRecorder` therefore writes nothing → `Output file missing or
+implausibly small` from `verify.sh`.
+
+The upstream KVS sample frames (`samples/h264SampleFrames/frame-XXXX.h264`)
+each carry a complete access unit (AUD + SPS + PPS + IDR for
+frame-0001, AUD + slice for the rest). The C SDK's H.264 RTP
+payloader (`RtpH264Payloader.c`) splits each frame on Annex-B
+boundaries and emits separate RTP packets per NAL unit. Per RFC 6184
+all NAL units in one access unit must share an RTP timestamp and
+the *last* RTP packet of the access unit must have the marker bit
+set; if either is wrong, aiortc treats every NAL as its own frame
+and feeds bare AUDs/SPSs to libavcodec, which rejects them with
+"Invalid data".
+
+Investigation steps:
+
+- `tcpdump -ni any -w /tmp/m.pcap udp` during the run, then
+  inspect the RTP timestamps + marker bit across one access unit.
+- Compare against the upstream `kvsWebRTCClientMaster` C sample
+  feeding the same frames into a known-good aiortc viewer
+  (Amazon's own integration tests use this combination).
+- If the marker bit is the issue, fix the master path that sets
+  it (likely in `kvs_media`'s frame loop or `KvsRtpTransceiver`'s
+  send routine).
+
+## 7f. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
 
 **Status:** open. Symptoms:
 
@@ -226,16 +299,6 @@ handshake completion + SRTP frame flow is the next gap.
   original intent — `tests/docker/docker-compose.yml`); local
   macOS run remains useful only up to the ICE-handshake green
   signal we already have.
-
-## 7e. linux_test: `KVS_FRAMES_DIR` default is wrong when run from build dir
-
-**Status:** trivial; ergonomic. The default path `samples/h264SampleFrames`
-is relative to cwd. Running `./build/linux_test.elf` from
-`examples/linux_test/` therefore can't find the upstream KVS sample
-frames at `${KVS_SDK_PATH}/samples/h264SampleFrames`. Worked-around by
-exporting `KVS_FRAMES_DIR=…/samples` before running. Either change the
-default to `${KVS_SDK_PATH}/samples` (resolved at build time) or document
-it more loudly in `examples/linux_test/README.md`.
 
 ## 8. KVS C SDK `Include.h` documents `0x5a00002c` as `STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED`
 

@@ -69,7 +69,10 @@ if [ -s "$RAW_H264" ]; then
     echo "--- ffprobe (raw h264) ---" ; cat ffprobe_raw.txt ; echo "----------------"
 
     RAW_FRAMES=$(awk -F= '/^nb_read_frames=/{print $2; exit}' ffprobe_raw.txt)
-    RAW_FRAMES="${RAW_FRAMES:-0}"
+    # ffprobe emits `N/A` when it can't reliably count frames (e.g. very
+    # short streams without a parsable IDR). Coerce to 0 so the integer
+    # comparison below doesn't blow up with "integer expression expected".
+    case "$RAW_FRAMES" in ""|"N/A") RAW_FRAMES=0 ;; esac
     echo "RAW_H264: $RAW_H264 size=${RAW_SIZE} bytes, ffprobe frames=${RAW_FRAMES}"
 
     # Pass criterion: at least 30 frames decoded by ffmpeg's CLI (≥1 s @ 30 fps).

@@ -383,16 +383,21 @@ void app_main(void)
     app_webrtc_enable_media_reception(true);                         // Enable receiving media
     // app_webrtc_set_ice_config(false, false);                         // Disable trickle ICE and TURN
 
-#if CONFIG_APP_NETWORK_USE_OPENETH
-    /* Under QEMU OpenETH (slirp NAT), TURN allocation against KVS
-     * fails (STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED) and the
-     * non-trickle answer-send path waits for full ICE gathering to
-     * complete. Disable TURN so gathering completes with just host
-     * candidates → master sends the answer immediately and the
-     * Python viewer (running on the same host as QEMU) can use the
-     * srflx/host candidates that slirp does forward. */
-    app_webrtc_set_ice_config(true, false);
-#endif
+    /* Historical note: an earlier OpenETH/QEMU workaround called
+     * `app_webrtc_set_ice_config(true, false)` here to disable TURN
+     * because TURN allocation was timing out under slirp. That made
+     * sense only because the assumption was that host/srflx candidates
+     * would still work — they don't, slirp does outbound NAT only and
+     * the Python viewer running outside the guest can never reach the
+     * `10.0.2.15:N` host candidate. The correct fix is the opposite:
+     * force TURN-relay-only via CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
+     * in `sdkconfig.defaults.qemu`, and let TURN actually allocate
+     * (which works through slirp now that mbedtls is in software-only
+     * mode). Disabling TURN at this layer would make the relay-only
+     * policy gather zero candidates and ICE would fail with
+     * STATUS_ICE_NO_CONNECTED_CANDIDATE_PAIR (0x5a00000d). Leaving
+     * `useTurn` at its default `true` so the Kconfig knob actually
+     * has effect. */
 
     ESP_LOGI(TAG, "Running WebRTC application");
 

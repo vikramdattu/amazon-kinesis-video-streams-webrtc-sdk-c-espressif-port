@@ -34,6 +34,7 @@ import boto3
 from botocore.auth import SigV4QueryAuth
 from botocore.awsrequest import AWSRequest
 from aiortc import (
+    RTCBundlePolicy,
     RTCConfiguration,
     RTCIceCandidate,
     RTCIceServer,
@@ -149,7 +150,21 @@ async def run() -> int:
     ice_servers = build_ice_servers(endpoints["HTTPS"], arn)
     signed_wss = sigv4_presign_wss(endpoints["WSS"], arn)
 
-    pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
+    # Force BUNDLE for all m-lines onto a single ICE+DTLS transport.
+    # aiortc's default `bundlePolicy=BALANCED` emits separate ufrag /
+    # pwd per m-line; the KVS C SDK's IceAgent assumes a single shared
+    # ICE session per peer (BUNDLE) and signs every STUN binding
+    # request with the first m-line's password. aiortc then rejects
+    # the request with `400 Bad Request` whenever the destination
+    # m-line's expected password differs, ICE never reaches NOMINATED
+    # + SUCCEEDED, and master fails after the 30 s nomination timeout
+    # with `STATUS_ICE_FAILED_TO_NOMINATE_CANDIDATE_PAIR`. With
+    # MAX_BUNDLE aiortc emits a shared ufrag / pwd plus
+    # `a=group:BUNDLE 0 1`, matching what the C SDK expects.
+    pc = RTCPeerConnection(RTCConfiguration(
+        iceServers=ice_servers,
+        bundlePolicy=RTCBundlePolicy.MAX_BUNDLE,
+    ))
     pc_holder["pc"] = pc
     recorder = MediaRecorder(OUT_PATH)
 

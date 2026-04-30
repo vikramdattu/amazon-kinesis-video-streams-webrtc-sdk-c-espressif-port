@@ -102,6 +102,30 @@ CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
 # slirp's NAT.
 CONFIG_KVS_WEBRTC_FILTER_TURN_UDP=y
 
+# Use upstream Tls_mbedtls.c for KVS TURN-over-TLS instead of our
+# components/kvs_webrtc/src/Tls_esp.c port. The Tls_esp.c
+# implementation is incomplete (its own comments admit "Simulate
+# handshake completion for now"): it never drives an actual TLS
+# handshake, the session state never transitions to CONNECTED, and
+# every tlsSessionPutApplicationData() call is rejected with
+# STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND. Result on QEMU: master
+# tries to send STUN ALLOCATE over the TLS-TCP TURN connection, every
+# write is dropped, AWS TURN never sees a request, master times out
+# at 5 s with STATUS_TURN_CONNECTION_GET_CREDENTIALS_FAILED.
+#
+# Upstream's Tls_mbedtls.c does the real TLS dance (mbedtls_ssl_handshake
+# + read/write callbacks). It's what `examples/linux_test` already uses
+# (CONFIG_USE_ESP_TLS_FOR_KVS=n in linux_test/sdkconfig.defaults), and
+# the linux_test_kvs_relay CI job verified it works for TURN-over-TLS.
+#
+# Switching real ESP targets here is an open question — Tls_esp.c was
+# written to leverage ESP's certificate bundle and esp-tls's existing
+# TLS plumbing for code-size reasons. For QEMU we just need correctness;
+# a few KB extra in mbedtls is acceptable to make the integration test
+# work. Real ESP targets keep CONFIG_USE_ESP_TLS_FOR_KVS=y until the
+# Tls_esp.c port is completed (separate work).
+CONFIG_USE_ESP_TLS_FOR_KVS=n
+
 # Force mbedtls to use software crypto, not the ESP32-S3 hardware AES /
 # SHA / MPI peripherals. qemu-xtensa's emulation of these has known
 # gaps — most visibly `qemu-system-xtensa: warning: [AES] Error reading

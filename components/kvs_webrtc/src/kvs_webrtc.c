@@ -62,6 +62,40 @@ static VOID onIceCandidateHandler(UINT64 customData, PCHAR candidateJson);
 static VOID kvs_send_non_trickle_answer(kvs_pc_session_t* session);
 static STATUS kvs_non_trickle_answer_watchdog_cb(UINT32 timerId, UINT64 currentTime, UINT64 customData);
 
+/* Returns TRUE if the URL is a TURN entry that should be skipped because
+ * CONFIG_KVS_WEBRTC_FILTER_TURN_UDP is set and the URL specifies UDP
+ * transport. Only TURN URLs are filtered; STUN URLs always pass through.
+ * The check matches `transport=udp` (case-insensitive) anywhere in the
+ * URL — KVS emits it as a query param after `?` but the spec allows
+ * variation. */
+static BOOL kvs_url_is_filtered_turn(const char *url)
+{
+#ifdef CONFIG_KVS_WEBRTC_FILTER_TURN_UDP
+    if (url == NULL || url[0] == '\0') {
+        return FALSE;
+    }
+    BOOL is_turn = (STRNCMPI(url, "turn:", 5) == 0) || (STRNCMPI(url, "turns:", 6) == 0);
+    if (!is_turn) {
+        return FALSE;
+    }
+    /* Case-insensitive substring match for "transport=udp". KVS URL form is
+     * `turn:host:port?transport=udp` or `turns:host:port?transport=udp`. */
+    const char *p = url;
+    static const char needle[] = "transport=udp";
+    SIZE_T nlen = SIZEOF(needle) - 1;
+    while (*p != '\0') {
+        if (STRNCMPI(p, needle, nlen) == 0) {
+            return TRUE;
+        }
+        p++;
+    }
+    return FALSE;
+#else
+    (void) url;
+    return FALSE;
+#endif
+}
+
 /* Force-send the non-trickle SDP_ANSWER if upstream ICE gathering doesn't
  * complete within this window. Long enough to let a healthy run finish
  * (host + srflx + relay all gathered), short enough that a viewer with
@@ -122,10 +156,14 @@ static STATUS kvs_applyNewIceServersCallback(UINT64 callerData, PHashEntry pHash
 
     // Extract only TURN servers for dynamic update (STUN servers are typically already applied)
     if (client->config.ice_servers != NULL && client->config.ice_server_count > 0) {
-        // First pass: count TURN servers
+        // First pass: count TURN servers (excluding any filtered by Kconfig)
         for (UINT32 i = 0; i < client->config.ice_server_count; i++) {
             RtcIceServer *server = &((RtcIceServer*)client->config.ice_servers)[i];
             if (STRNCMPI(server->urls, "turn:", 5) == 0 || STRNCMPI(server->urls, "turns:", 6) == 0) {
+                if (kvs_url_is_filtered_turn(server->urls)) {
+                    ESP_LOGI(TAG, "Skipping TURN URL (CONFIG_KVS_WEBRTC_FILTER_TURN_UDP): %s", server->urls);
+                    continue;
+                }
                 newTurnServerCount++;
             }
         }
@@ -137,10 +175,13 @@ static STATUS kvs_applyNewIceServersCallback(UINT64 callerData, PHashEntry pHash
 
             ESP_LOGI(TAG, "Found %" PRIu32 " new TURN servers for dynamic update", newTurnServerCount);
 
-            // Second pass: copy TURN servers
+            // Second pass: copy TURN servers (skip filtered)
             for (UINT32 i = 0; i < client->config.ice_server_count; i++) {
                 RtcIceServer *server = &((RtcIceServer*)client->config.ice_servers)[i];
                 if (STRNCMPI(server->urls, "turn:", 5) == 0 || STRNCMPI(server->urls, "turns:", 6) == 0) {
+                    if (kvs_url_is_filtered_turn(server->urls)) {
+                        continue;
+                    }
                     MEMCPY(&newTurnServers[turnServerIndex], server, SIZEOF(RtcIceServer));
                     ESP_LOGI(TAG, "TURN server %" PRIu32 ": %s (user: %s)",
                              turnServerIndex, server->urls,
@@ -1815,6 +1856,11 @@ static STATUS kvs_initializePeerConnection(kvs_pc_client_t* client, PRtcPeerConn
                 // Optionally filter out TURN when not desired
                 BOOL isTurn = (STRNCMPI(iceServers[i].urls, "turn:", 5) == 0) || (STRNCMPI(iceServers[i].urls, "turns:", 6) == 0);
                 if (isTurn && !client->config.use_turn) {
+                    configuration.iceServers[i].urls[0] = '\0';
+                } else if (isTurn && kvs_url_is_filtered_turn(iceServers[i].urls)) {
+                    /* CONFIG_KVS_WEBRTC_FILTER_TURN_UDP: drop UDP-transport TURN entries.
+                     * Used in QEMU/slirp where inbound UDP responses are unreliable. */
+                    ESP_LOGI(TAG, "Skipping TURN URL (CONFIG_KVS_WEBRTC_FILTER_TURN_UDP): %s", iceServers[i].urls);
                     configuration.iceServers[i].urls[0] = '\0';
                 } else {
                     STRNCPY(configuration.iceServers[i].urls, iceServers[i].urls, MAX_ICE_CONFIG_URI_LEN - 1);

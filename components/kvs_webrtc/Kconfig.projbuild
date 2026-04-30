@@ -31,4 +31,25 @@ menu "KVS WebRTC Configuration"
             candidates are unreachable from the remote peer's perspective).
 
             Default: n (ICE_TRANSPORT_POLICY_ALL — host + srflx + relay).
+
+    config KVS_WEBRTC_FILTER_TURN_UDP
+        bool "Drop TURN URLs with transport=udp (force TCP/TLS-over-TCP only)"
+        default n
+        help
+            When enabled, URLs of the form `turn:...?transport=udp` and
+            `turns:...?transport=udp` are skipped during ICE configuration.
+            Only TURN-over-TCP / TURN-over-TLS-over-TCP entries are
+            advertised to the IceAgent.
+
+            Required for environments where outbound UDP works but inbound
+            UDP NAT-rebound responses are dropped, e.g. qemu-xtensa user-mode
+            networking (slirp). Slirp creates an outbound UDP NAT entry on
+            send but doesn't reliably deliver responses from the AWS TURN
+            relay back to the guest, so DTLS handshake stalls even though
+            STUN allocation succeeds. TCP relay is single-stream and traverses
+            slirp NAT cleanly.
+
+            Default: n. Enable in sdkconfig.defaults.qemu alongside
+            CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y for the QEMU
+            integration test path.
 endmenu

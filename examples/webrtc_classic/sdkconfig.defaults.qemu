@@ -86,6 +86,22 @@ CONFIG_BT_CONTROLLER_ENABLED=n
 # the trade-off for an integration test inside QEMU.
 CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
 
+# Drop TURN URLs with `transport=udp`. KVS hands out three TURN URLs
+# (turn:?udp, turns:?udp, turns:?tcp). On QEMU+slirp, the outbound
+# UDP NAT works for STUN allocation requests, but slirp doesn't
+# reliably deliver inbound UDP responses to the AWS TURN relay back
+# into the guest — so DTLS handshake stalls when ICE picks the UDP
+# relay path. With this filter, master only advertises the TLS-over-
+# TCP TURN URL, which goes through slirp NAT cleanly (single TCP
+# stream, responses arrive in-stream).
+#
+# The TLS-ESP "Shutting down TLS session" we previously suspected as
+# the bug was actually NORMAL cleanup of the unused TCP TURN by
+# `iceAgentReadyStateSetup`'s loop after ICE picked the UDP relay —
+# the real issue was DTLS over the UDP relay never getting through
+# slirp's NAT.
+CONFIG_KVS_WEBRTC_FILTER_TURN_UDP=y
+
 # Force mbedtls to use software crypto, not the ESP32-S3 hardware AES /
 # SHA / MPI peripherals. qemu-xtensa's emulation of these has known
 # gaps — most visibly `qemu-system-xtensa: warning: [AES] Error reading

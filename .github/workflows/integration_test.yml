@@ -312,150 +312,20 @@ jobs:
             ffprobe_raw.txt
           retention-days: 7
 
-  # ESP32 (xtensa, original) variant of the QEMU integration test.
-  # Runs in parallel with esp32s3_qemu_kvs_test against a separate
-  # KVS channel.
-  #
-  # Why we have an ESP32 path at all: the ssi_psram device shipped with
-  # qemu-xtensa esp_develop_9.2.2 silently ignores
-  # `-global driver=ssi_psram,property=size_mbytes,value=N` (machine
-  # init clobbers the property right after qdev_new). The ESP32-S3
-  # workflow above wants 8 MB PSRAM and gets 32 MB instead, which
-  # exhausts the cache MMU's vaddr range. ESP32's default emulated
-  # PSRAM is 4 MB, which matches what real ESP32-WROVER hardware ships
-  # with — so this job exercises the full end-to-end path on the
-  # unpatched QEMU we already have. Tracked upstream MR:
-  # https://gitlab.espressif.cn:6688/idf/qemu/-/merge_requests/115
-  esp32_qemu_kvs_test:
-    name: "esp32 QEMU + Python viewer | webrtc_classic"
-    runs-on: ubuntu-22.04
-    container: espressif/idf:release-v5.5
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request' }}
-    # esp32 (Xtensa LX6) under qemu-xtensa is significantly slower than
-    # esp32s3 (LX7 + PIE): single-core, no PIE/SIMD, slower internal-RAM
-    # path. ICE+DTLS handshake reaches CONNECTED ~50-90 s after offer,
-    # so we run a longer window than the s3 job. linux_test_kvs is the
-    # authoritative gate; this job is informational.
-    continue-on-error: true
-    timeout-minutes: 45
-
-    env:
-      KVS_CHANNEL_NAME: ${{ secrets.KVS_QEMU_CHANNEL_NAME && format('{0}-esp32', secrets.KVS_QEMU_CHANNEL_NAME) || format('espressif-port-qemu-esp32-{0}', github.run_id) }}
-      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
-      TEST_DURATION_SEC: 120
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Verify AWS creds
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        id: creds
-        run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
-            echo "::warning::AWS_ACCESS_KEY_ID not set — skipping QEMU integration test."
-            echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "skip=0" >> "$GITHUB_OUTPUT"
-
-      - name: Apply SDK patches
-        shell: bash
-        run: |
-          git config --global --add safe.directory "*"
-          cd amazon-kinesis-video-streams-webrtc-sdk-c
-          git config user.email "ci@example.com"
-          git config user.name "CI"
-          git am ../patches/*.patch
-
-      - name: Install qemu-xtensa + Python viewer deps + ffmpeg
-        if: steps.creds.outputs.skip != '1'
-        shell: bash
-        run: |
-          . /opt/esp/idf/export.sh
-          python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          which qemu-system-xtensa
-          apt-get update && apt-get install -y --no-install-recommends ffmpeg
-          pip install --no-cache-dir -r tests/docker/python_viewer/requirements.txt
-
-      - name: Generate sdkconfig overlay with AWS creds
-        if: steps.creds.outputs.skip != '1'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-        shell: bash
-        run: tests/docker/ci/gen_creds_overlay.sh examples/webrtc_classic/sdkconfig.defaults.qemu.local
-
-      - name: Build webrtc_classic for esp32 with QEMU + creds overlays
-        if: steps.creds.outputs.skip != '1'
-        env:
-          KVS_SDK_PATH: ${{ github.workspace }}
-          # No esp32-specific overlay — the base sdkconfig.defaults
-          # already sets CONFIG_ESP32_SPIRAM_SUPPORT=y + 4 MB QSPI
-          # PSRAM defaults that line up with what qemu-xtensa emulates
-          # out of the box (`-M esp32 -m 4M`).
-          SDKCONFIG_DEFAULTS: "sdkconfig.defaults;sdkconfig.defaults.qemu;sdkconfig.defaults.qemu.local"
-        shell: bash
-        run: |
-          cd examples/webrtc_classic
-          . /opt/esp/idf/export.sh
-          idf.py set-target esp32
-          idf.py build
-
-      - name: Run QEMU + Python viewer against same KVS channel
-        if: steps.creds.outputs.skip != '1'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-        shell: bash
-        run: |
-          # No size_mbytes override here — esp32's machine default is
-          # already `-m 4M` and qemu's ssi_psram device defaults to 4
-          # MB, which matches what real ESP32-WROVER hardware reports.
-          export OUT_PATH="$GITHUB_WORKSPACE/qemu_recording.mkv"
-          export LOG_PATH="$GITHUB_WORKSPACE/python_viewer.log"
-          cd examples/webrtc_classic
-          . /opt/esp/idf/export.sh
-          "$GITHUB_WORKSPACE/tests/docker/ci/run_qemu_with_viewer.sh"
-
-      - name: Verify recording (ffprobe — H.264 + OPUS cross-check)
-        if: steps.creds.outputs.skip != '1'
-        shell: bash
-        run: tests/docker/ci/verify_recording.sh "$GITHUB_WORKSPACE/qemu_recording.mkv"
-
-      - name: Delete KVS channel
-        if: always() && steps.creds.outputs.skip != '1'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-        shell: bash
-        run: |
-          . /opt/esp/idf/export.sh
-          python tests/docker/ci/kvs_delete_channel.py
-
-      - name: Upload QEMU + viewer artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qemu-esp32-kvs-test-${{ github.run_id }}
-          path: |
-            examples/webrtc_classic/qemu_serial.log
-            python_viewer.log
-            qemu_recording.mkv
-            qemu_recording.h264
-            ffprobe.txt
-            ffprobe_raw.txt
-          retention-days: 7
-
   # IDF Linux-target variant: drives the same SDK stack
   # (app_webrtc + kvs_signaling + kvs_webrtc) as a master peer
   # entirely on the runner host — no QEMU, no slirp NAT. Sidesteps
   # every QEMU networking limitation that blocks media flow on the
-  # esp32 / esp32s3 jobs above.
+  # esp32s3 QEMU job above.
+  #
+  # ESP32 (Xtensa LX6) QEMU was previously here as a sibling job but
+  # got dropped for the first release: qemu-xtensa-esp32's lwIP/slirp
+  # emulation stalls the TURN-over-TLS handshake after the initial
+  # ServerHello flight, so the integration scenario can't run to
+  # completion under emulation. Real ESP32 hardware passes; the limit
+  # is purely environmental. Restore from `git revert` of the dropping
+  # commit when qemu-xtensa networking emulation is good enough to
+  # carry it.
   linux_test_kvs:
     name: "linux_test (IDF Linux target) | KVS master"
     runs-on: ubuntu-22.04

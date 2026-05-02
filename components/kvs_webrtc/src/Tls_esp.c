@@ -206,6 +206,14 @@ STATUS tlsSessionProcessPacket(PTlsSession pTlsSession, PBYTE pData, UINT32 buff
     PIOBuffer pReadBuffer;
 
     CHK(pTlsSession != NULL && pData != NULL && pDataLen != NULL, STATUS_NULL_ARG);
+    ESP_LOGW(TAG, "DBG_TLS: processPacket entry tls_state=%d in_bytes=%u sslCtx_state=%d",
+             (int)pTlsSession->state, pDataLen ? *pDataLen : 0,
+#if MBEDTLS_BEFORE_V3
+             (int)pTlsSession->sslCtx.state
+#else
+             (int)pTlsSession->sslCtx.MBEDTLS_PRIVATE(state)
+#endif
+            );
     CHK(pTlsSession->state != TLS_SESSION_STATE_NEW, STATUS_SOCKET_CONNECTION_NOT_READY_TO_SEND);
     CHK(pTlsSession->state != TLS_SESSION_STATE_CLOSED, STATUS_SOCKET_CONNECTION_CLOSED_ALREADY);
 
@@ -239,7 +247,17 @@ STATUS tlsSessionProcessPacket(PTlsSession pTlsSession, PBYTE pData, UINT32 buff
 #else
     if (pTlsSession->sslCtx.MBEDTLS_PRIVATE(state) == MBEDTLS_SSL_HANDSHAKE_OVER) {
 #endif
+        ESP_LOGW(TAG, "DBG_TLS: handshake OVER detected, transitioning to CONNECTED");
         tlsSessionChangeState(pTlsSession, TLS_SESSION_STATE_CONNECTED);
+    } else {
+        ESP_LOGW(TAG, "DBG_TLS: processPacket exit tls_state=%d sslCtx_state=%d readBytes=%d sslRet_last=%d",
+                 (int)pTlsSession->state,
+#if MBEDTLS_BEFORE_V3
+                 (int)pTlsSession->sslCtx.state,
+#else
+                 (int)pTlsSession->sslCtx.MBEDTLS_PRIVATE(state),
+#endif
+                 readBytes, sslRet);
     }
 
 CleanUp:
@@ -310,6 +328,7 @@ STATUS tlsSessionChangeState(PTlsSession pTlsSession, TLS_SESSION_STATE newState
     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
     CHK(pTlsSession->state != newState, retStatus);
 
+    ESP_LOGW(TAG, "DBG_TLS: state %d -> %d", (int)pTlsSession->state, (int)newState);
     pTlsSession->state = newState;
 
     if (pTlsSession->callbacks.stateChangeFn != NULL) {

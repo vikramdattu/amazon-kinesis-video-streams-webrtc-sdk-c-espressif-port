@@ -411,6 +411,9 @@ esp_err_t video_render_display_init(const video_render_display_cfg_t *cfg,
      * trample child widgets — they're composited over the canvas buffer. */
     ctx->fps_label = lv_label_create(ctx->canvas);
     if (ctx->fps_label) {
+        /* Fully opaque black tile under the white text. Semi-transparent
+         * blends with the moving video frame underneath — looked like the
+         * background was "changing colour" per frame. */
         lv_obj_set_style_text_color(ctx->fps_label, lv_color_white(), 0);
         lv_obj_set_style_bg_color(ctx->fps_label, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(ctx->fps_label, LV_OPA_COVER, 0);

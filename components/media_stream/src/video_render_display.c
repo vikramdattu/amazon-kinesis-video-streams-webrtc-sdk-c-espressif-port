@@ -155,6 +155,34 @@ static void pack_i420_center_crop(const uint8_t *y, const uint8_t *u, const uint
     }
 }
 
+/* Center-crop fast-path: src_w == dst_w, src_h >= dst_h. Pick the middle
+ * dst_h rows of the source and convert 1:1 per pixel — no x scaling, no
+ * fractional y stepping. For 240x320 -> 240x240 this drops the inner-loop
+ * src_x_q16 accumulator and the per-pixel x bookkeeping. */
+static void render_i420_crop_to_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v,
+                                       uint16_t src_h,
+                                       uint16_t y_stride, uint16_t uv_stride,
+                                       uint16_t *dst, uint16_t dst_w, uint16_t dst_h)
+{
+    const uint16_t y_off = (src_h > dst_h) ? (uint16_t)((src_h - dst_h) / 2) : 0;
+
+    for (uint16_t cy = 0; cy < dst_h; ++cy) {
+        const uint16_t sy = (uint16_t)(cy + y_off);
+        const uint8_t *row_y = y + (size_t)sy * y_stride;
+        const uint8_t *row_u = u + (size_t)(sy >> 1) * uv_stride;
+        const uint8_t *row_v = v + (size_t)(sy >> 1) * uv_stride;
+        uint16_t *row_dst = dst + (size_t)cy * dst_w;
+
+        for (uint16_t cx = 0; cx < dst_w; ++cx) {
+            const int yv = row_y[cx];
+            const int uv_off = cx >> 1;
+            const int uv = row_u[uv_off];
+            const int vv = row_v[uv_off];
+            row_dst[cx] = yuv_to_rgb565(yv, uv, vv);
+        }
+    }
+}
+
 /* Nearest-neighbour scale of an I420 source into an RGB565 destination.
  *
  * Used as the slow-path fallback when the input geometry rules out the
@@ -162,12 +190,22 @@ static void pack_i420_center_crop(const uint8_t *y, const uint8_t *u, const uint
  * destination pixel, map to a source (Y, U, V) sample and convert. Per
  * destination row, precompute the source row pointers once and walk with
  * a running src_x accumulator to avoid a division per pixel.
+ *
+ * Fast-paths center-crop when src_w == dst_w (typical phone-portrait case
+ * 240x320 -> 240x240) — saves the per-pixel src_x bookkeeping in the inner
+ * loop.
  */
 static void render_i420_to_rgb565(const uint8_t *y, const uint8_t *u, const uint8_t *v,
                                   uint16_t src_w, uint16_t src_h,
                                   uint16_t y_stride, uint16_t uv_stride,
                                   uint16_t *dst, uint16_t dst_w, uint16_t dst_h)
 {
+    if (src_w == dst_w && src_h >= dst_h) {
+        render_i420_crop_to_rgb565(y, u, v, src_h, y_stride, uv_stride,
+                                   dst, dst_w, dst_h);
+        return;
+    }
+
     const uint32_t x_ratio_q16 = ((uint32_t)src_w << 16) / dst_w;
     const uint32_t y_ratio_q16 = ((uint32_t)src_h << 16) / dst_h;
 

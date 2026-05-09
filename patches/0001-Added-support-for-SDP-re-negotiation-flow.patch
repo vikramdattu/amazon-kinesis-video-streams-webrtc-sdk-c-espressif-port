@@ -1,4 +1,4 @@
-From 3a0e405db0cf22466d1bcc02631e1b13385932ad Mon Sep 17 00:00:00 2001
+From 77968b79f37d269b4222b22c182f909328c48112 Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Mon, 9 Feb 2026 16:52:34 +0530
 Subject: [PATCH 1/6] Added support for SDP re-negotiation flow
@@ -9,14 +9,14 @@ Subject: [PATCH 1/6] Added support for SDP re-negotiation flow
 ---
  src/source/PeerConnection/PeerConnection.c    |   3 +
  .../PeerConnection/SessionDescription.c       |  23 ++
- tst/PeerConnectionFunctionalityTest.cpp       | 237 ++++++++++++++++++
- 3 files changed, 263 insertions(+)
+ tst/PeerConnectionFunctionalityTest.cpp       | 217 ++++++++++++++++++
+ 3 files changed, 243 insertions(+)
 
 diff --git a/src/source/PeerConnection/PeerConnection.c b/src/source/PeerConnection/PeerConnection.c
-index 5fc561d1c0..de9c2b4d87 100644
+index 7e968b94c5..3a85e797aa 100644
 --- a/src/source/PeerConnection/PeerConnection.c
 +++ b/src/source/PeerConnection/PeerConnection.c
-@@ -1394,6 +1394,9 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
+@@ -1401,6 +1401,9 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
  
      // In master mode, this should be freed once `createAnswer` is invoked for the session.
      // In viewer mode, this should be freed once `setRemoteDescription` is completed for the session.
@@ -27,7 +27,7 @@ index 5fc561d1c0..de9c2b4d87 100644
      pSessionDescription = pKvsPeerConnection->pRemoteSessionDescription;
      CHK(pSessionDescription != NULL, STATUS_NOT_ENOUGH_MEMORY);
 diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
-index 0960daf305..9cac1199a7 100644
+index f70254db6c..a5ca3917b3 100644
 --- a/src/source/PeerConnection/SessionDescription.c
 +++ b/src/source/PeerConnection/SessionDescription.c
 @@ -350,6 +350,14 @@ STATUS setTransceiverPayloadTypes(PHashTable codecTable, PHashTable rtxTable, PD
@@ -45,7 +45,7 @@ index 0960daf305..9cac1199a7 100644
              if (pKvsRtpTransceiver->pRollingBufferConfig == NULL) {
                  // Passing in 0,0. The default values will be set up since application has not set up rolling buffer config with the
                  // configureTransceiverRollingBuffer() call
-@@ -1250,6 +1258,21 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+@@ -1361,6 +1369,21 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
      PKvsRtpTransceiver pKvsRtpFakeTransceiver = NULL;
      PRtcMediaStreamTrack pRtcMediaStreamTrack;
      RtcMediaStreamTrack track;
@@ -68,13 +68,13 @@ index 0960daf305..9cac1199a7 100644
      // pSeenTranceivers is populated only with codec types supported by the SDK. And if already populated, it is not added again.
      // Hence, it is sufficient if the hash table count is set to minimum or required transceivers
 diff --git a/tst/PeerConnectionFunctionalityTest.cpp b/tst/PeerConnectionFunctionalityTest.cpp
-index 01f9d5a7c6..8fb55a8620 100644
+index 449ced77e6..82ef78f1db 100644
 --- a/tst/PeerConnectionFunctionalityTest.cpp
 +++ b/tst/PeerConnectionFunctionalityTest.cpp
-@@ -1280,6 +1280,243 @@ TEST_F(PeerConnectionFunctionalityTest, aggressiveNominationDTLSRaceConditionChe
-     }
- }
+@@ -1330,6 +1330,70 @@ TEST_F(PeerConnectionFunctionalityTest, connectTwoPeersForcedTURNWithDynamicIceS
  
+     // Now connect — relay candidates should be generated from the dynamically added TURN servers
+     EXPECT_EQ(TRUE, connectTwoPeers(offerPc, answerPc));
 +// Re-negotiation test: perform a second offer/answer exchange on the same PeerConnection
 +// objects without changing ICE credentials. Verify connection stays CONNECTED.
 +TEST_F(PeerConnectionFunctionalityTest, renegotiateWithSameIceCredentials)
@@ -139,12 +139,13 @@ index 01f9d5a7c6..8fb55a8620 100644
 +    this->threads.clear();
 +    this->noNewThreads = TRUE;
 +    this->lock.unlock();
-+
-+    closePeerConnection(offerPc);
-+    closePeerConnection(answerPc);
-+
-+    freePeerConnection(&offerPc);
-+    freePeerConnection(&answerPc);
+ 
+     closePeerConnection(offerPc);
+     closePeerConnection(answerPc);
+@@ -1380,6 +1444,63 @@ TEST_F(PeerConnectionFunctionalityTest, updateIceServersAfterIceFailure)
+     // Should fail because ICE agent is in FAILED state
+     EXPECT_EQ(STATUS_INVALID_OPERATION, peerConnectionUpdateIceServers(offerPc, turnServers, uriCount));
+     EXPECT_EQ(STATUS_INVALID_OPERATION, peerConnectionUpdateIceServers(answerPc, turnServers, uriCount));
 +}
 +
 +// Re-negotiation test with ICE restart: perform a second offer/answer exchange
@@ -202,12 +203,13 @@ index 01f9d5a7c6..8fb55a8620 100644
 +    this->threads.clear();
 +    this->noNewThreads = TRUE;
 +    this->lock.unlock();
-+
-+    closePeerConnection(offerPc);
-+    closePeerConnection(answerPc);
-+
-+    freePeerConnection(&offerPc);
-+    freePeerConnection(&answerPc);
+ 
+     closePeerConnection(offerPc);
+     closePeerConnection(answerPc);
+@@ -1448,6 +1569,102 @@ TEST_F(PeerConnectionFunctionalityTest, connectTwoPeersForcedTURNWithDelayedDyna
+     EXPECT_EQ(TRUE, connectTwoPeers(offerPc, answerPc));
+ 
+     updateThread.join();
 +}
 +
 +// Re-negotiation test: connect with one video track, then add an audio track
@@ -304,17 +306,9 @@ index 01f9d5a7c6..8fb55a8620 100644
 +    this->threads.clear();
 +    this->noNewThreads = TRUE;
 +    this->lock.unlock();
-+
-+    closePeerConnection(offerPc);
-+    closePeerConnection(answerPc);
-+
-+    freePeerConnection(&offerPc);
-+    freePeerConnection(&answerPc);
-+}
-+
- } // namespace webrtcclient
- } // namespace video
- } // namespace kinesis
+ 
+     closePeerConnection(offerPc);
+     closePeerConnection(answerPc);
 -- 
 2.39.5 (Apple Git-154)
 

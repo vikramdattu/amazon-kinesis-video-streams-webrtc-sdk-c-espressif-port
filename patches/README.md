@@ -30,9 +30,18 @@ cd ..
 | 0001 | Added support for SDP re-negotiation flow | aligned | [awslabs#2214](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2214) |
 | 0002 | SDP renegotiation: apply remote offer to transceiver directions and mark removed tracks inactive | aligned | [awslabs#2214](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2214) |
 | 0003 | Fix format specifiers for cross-platform compatibility | aligned | test-only — track upstream |
-| 0004 | KVS SDK: Added support for dynamically adding ICE servers | aligned | [awslabs#2164](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2164) |
-| 0005 | Network.c: Changes to support ESP-IDF | ESP-specific | n/a |
-| 0006 | ESP-IDF platform adaptations and robustness improvements | mixed | partial: [awslabs#2146](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2146) for the `PREFER_DYNAMIC_ALLOCS` portion |
+| 0004 | Network.c: Changes to support ESP-IDF | ESP-specific | n/a |
+| 0005 | ESP-IDF platform adaptations and robustness improvements | mixed | partial: [awslabs#2146](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2146) for the `PREFER_DYNAMIC_ALLOCS` portion |
+
+> **Removed (absorbed upstream):**
+>
+> - Original `0004 — KVS SDK: Added support for dynamically adding ICE servers`
+>   was absorbed by [awslabs#2164](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2164)
+>   (`Feature: Dynamic ice server add`, commit `2641d6e5cd`). Consumer code
+>   should call the upstream `peerConnectionUpdateIceServers` API directly.
+> - `0006 — Fix bitwise & vs logical && typo in writeTransceiverDirection
+>   cleanup` was absorbed by [awslabs#2278](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2278)
+>   (commit `9b27f4b07`) and pulled into the submodule bump.
 
 ### Notes per patch
 
@@ -49,17 +58,11 @@ inactive. Drops together with 0001 once **awslabs#2214** lands.
 `tst/PeerConnectionFunctionalityTest.cpp`. Replaces non-portable format
 specifiers; landing upstream is test-hygiene rather than a feature change.
 
-**0004 — Dynamically adding ICE servers.** Adds a public API to add ICE servers
-(STUN / TURN) at runtime instead of only at peer-connection creation. This is
-how the SDK on ESP can continue with STUN-only and add TURN servers when they
-become available — meaningful performance improvement. Drops when
-**awslabs#2164** lands.
-
-**0005 — `Network.c` ESP-IDF adaptations.** Long-term ESP-IDF specific change
+**0004 — `Network.c` ESP-IDF adaptations.** Long-term ESP-IDF specific change
 in `src/source/Ice/Network.c`. lwIP `getifaddrs` / route enumeration semantics
 differ from glibc, and this patch closes that gap. Stays.
 
-**0006 — ESP-IDF platform adaptations + robustness.** The largest patch, mixing
+**0005 — ESP-IDF platform adaptations + robustness.** The largest patch, mixing
 two kinds of changes:
 
   - **Aligned-with-upstream:** the `PREFER_DYNAMIC_ALLOCS` /
@@ -67,14 +70,14 @@ two kinds of changes:
     arrays in the signaling payload and TURN URL fields with optional dynamic
     allocation. This is the same idea as **awslabs#2146** ("Option to use
     dynamic allocations over huge static arrays — limits memory utilization").
-    When #2146 lands upstream, this portion of 0006 will be split out and
+    When #2146 lands upstream, this portion of 0005 will be split out and
     removed.
   - **ESP-IDF-specific (stays):** ConnectionListener custom thread for
     constrained-stack platforms, mbedtls-3.x compatibility shims, robustness
     fixes in `SocketConnection.c`, `Sctp.c` and `LwsApiCalls.c`.
 
-Patch 0006 will be split into a `0006a-dynamic-allocs` (aligned) and a
-`0006b-esp-platform` (ESP-specific) once #2146 reaches upstream review.
+Patch 0005 will be split into a `0005a-dynamic-allocs` (aligned) and a
+`0005b-esp-platform` (ESP-specific) once #2146 reaches upstream review.
 
 ## Patches-removal workstream
 
@@ -83,8 +86,8 @@ end state is:
 
 ```
 patches/
-├── 0001-Network.c-...                     # ESP-specific (was 0005)
-├── 0002-ConnectionListener-mbedtls-...    # ESP-specific (was 0006b)
+├── 0001-Network.c-...                     # ESP-specific (was 0004)
+├── 0002-ConnectionListener-mbedtls-...    # ESP-specific (was 0005b)
 └── README.md
 ```
 
@@ -93,7 +96,6 @@ The path to that state is the upstream PR landing schedule:
 | Local patch | Removed when |
 |-------------|--------------|
 | 0001, 0002, 0003 | `awslabs#2214` (and its companion #2156 if applicable) merges |
-| 0004 | `awslabs#2164` merges |
-| 0006 (aligned half) | `awslabs#2146` merges |
+| 0005 (aligned half) | `awslabs#2146` merges |
 
 This file should be kept up-to-date as patches are added, removed, or split.

@@ -1204,6 +1204,8 @@ STATUS describeChannel(PSignalingClient pSignalingClient, UINT64 time)
         case SIGNALING_API_CALL_CACHE_TYPE_DESCRIBE_GETENDPOINT:
             /* explicit fall-through */
         case SIGNALING_API_CALL_CACHE_TYPE_FILE:
+            /* explicit fall-through */
+        case SIGNALING_API_CALL_CACHE_TYPE_FILE_EXCEPT_DESCRIBE_MEDIA:
             if (IS_VALID_TIMESTAMP(pSignalingClient->describeTime) &&
                 time <= pSignalingClient->describeTime + pSignalingClient->pChannelInfo->cachingPeriod) {
                 apiCall = FALSE;
@@ -1316,6 +1318,8 @@ STATUS getChannelEndpoint(PSignalingClient pSignalingClient, UINT64 time)
         case SIGNALING_API_CALL_CACHE_TYPE_DESCRIBE_GETENDPOINT:
             /* explicit fall-through */
         case SIGNALING_API_CALL_CACHE_TYPE_FILE:
+            /* explicit fall-through */
+        case SIGNALING_API_CALL_CACHE_TYPE_FILE_EXCEPT_DESCRIBE_MEDIA:
             DLOGD("time: %llu, endpoint time: %llu,  Caching Period:  %llu", time, pSignalingClient->getEndpointTime,
                   pSignalingClient->pChannelInfo->cachingPeriod);
             if (IS_VALID_TIMESTAMP(pSignalingClient->getEndpointTime) &&
@@ -1602,6 +1606,9 @@ STATUS describeMediaStorageConf(PSignalingClient pSignalingClient, UINT64 time)
 
     switch (pSignalingClient->pChannelInfo->cachingPolicy) {
         case SIGNALING_API_CALL_CACHE_TYPE_NONE:
+            /* explicit fall-through — _FILE_EXCEPT_DESCRIBE_MEDIA always calls
+             * DescribeMediaStorageConfiguration fresh, like _NONE */
+        case SIGNALING_API_CALL_CACHE_TYPE_FILE_EXCEPT_DESCRIBE_MEDIA:
             break;
 
         case SIGNALING_API_CALL_CACHE_TYPE_DESCRIBE_GETENDPOINT:

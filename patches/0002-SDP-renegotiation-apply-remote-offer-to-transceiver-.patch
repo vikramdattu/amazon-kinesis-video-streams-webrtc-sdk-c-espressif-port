@@ -1,4 +1,4 @@
-From 2439f2abeacb8bd3467be0394df89515cd4a0cf0 Mon Sep 17 00:00:00 2001
+From c2a6128f95da55a2ce14b255850374265eec9e1b Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Tue, 17 Feb 2026 22:55:40 +0530
 Subject: [PATCH 2/6] SDP renegotiation: apply remote offer to transceiver
@@ -18,10 +18,10 @@ Subject: [PATCH 2/6] SDP renegotiation: apply remote offer to transceiver
  4 files changed, 302 insertions(+), 2 deletions(-)
 
 diff --git a/src/source/PeerConnection/PeerConnection.c b/src/source/PeerConnection/PeerConnection.c
-index de9c2b4d87..cb69b75cea 100644
+index 3a85e797aa..b2225f6a81 100644
 --- a/src/source/PeerConnection/PeerConnection.c
 +++ b/src/source/PeerConnection/PeerConnection.c
-@@ -1483,6 +1483,27 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
+@@ -1540,6 +1540,27 @@ STATUS setRemoteDescription(PRtcPeerConnection pPeerConnection, PRtcSessionDescr
      CHK_STATUS(setTransceiverPayloadTypes(pKvsPeerConnection->pCodecTable, pKvsPeerConnection->pRtxTable, pKvsPeerConnection->pTransceivers));
      CHK_STATUS(setReceiversSsrc(pSessionDescription, pKvsPeerConnection->pTransceivers));
  
@@ -50,7 +50,7 @@ index de9c2b4d87..cb69b75cea 100644
          DLOGD("REMOTE_SDP:%s\n", pSessionDescriptionInit->sdp);
      }
 diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
-index a098140fc6..b5d3220d5a 100644
+index e6d41c6f5b..0263380195 100644
 --- a/src/source/PeerConnection/Rtp.c
 +++ b/src/source/PeerConnection/Rtp.c
 @@ -288,6 +288,10 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
@@ -65,7 +65,7 @@ index a098140fc6..b5d3220d5a 100644
      if (MEDIA_STREAM_TRACK_KIND_VIDEO == pKvsRtpTransceiver->sender.track.kind) {
          frames++;
 diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
-index 9cac1199a7..b8d5cad8d0 100644
+index a5ca3917b3..9a16efb06e 100644
 --- a/src/source/PeerConnection/SessionDescription.c
 +++ b/src/source/PeerConnection/SessionDescription.c
 @@ -355,6 +355,7 @@ STATUS setTransceiverPayloadTypes(PHashTable codecTable, PHashTable rtxTable, PD
@@ -76,7 +76,7 @@ index 9cac1199a7..b8d5cad8d0 100644
                  continue;
              }
  
-@@ -1231,6 +1232,39 @@ CleanUp:
+@@ -1342,6 +1343,39 @@ CleanUp:
      return retStatus;
  }
  
@@ -116,7 +116,7 @@ index 9cac1199a7..b8d5cad8d0 100644
  // primarily used for creating a list of transceivers corresponding to each media m-line to respond to an offer with an answer
  // This function generates the pAnswerTransceivers list which contains transceivers corresponding to each m-line in correct order
  // To generate this list, it traverses over each m-line, first checks if it has a user-created transceiver present using findCodecInTransceivers
-@@ -1251,11 +1285,12 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+@@ -1362,11 +1396,12 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
      PCHAR attributeValue, end, codecs = NULL;
      PCHAR rtpMapValue = NULL;
      CHAR firstCodec[MAX_PAYLOAD_TYPE_LENGTH];
@@ -131,7 +131,7 @@ index 9cac1199a7..b8d5cad8d0 100644
      PRtcMediaStreamTrack pRtcMediaStreamTrack;
      RtcMediaStreamTrack track;
      PDoubleListNode pCurNode = NULL;
-@@ -1428,6 +1463,63 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+@@ -1539,6 +1574,63 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
          }
      }
  
@@ -196,11 +196,11 @@ index 9cac1199a7..b8d5cad8d0 100644
      CHK_STATUS(hashTableFree(pSeenTransceivers));
      CHK_LOG_ERR(retStatus);
 diff --git a/tst/PeerConnectionFunctionalityTest.cpp b/tst/PeerConnectionFunctionalityTest.cpp
-index 8fb55a8620..9086c681fe 100644
+index 82ef78f1db..77891d16a7 100644
 --- a/tst/PeerConnectionFunctionalityTest.cpp
 +++ b/tst/PeerConnectionFunctionalityTest.cpp
-@@ -1517,6 +1517,189 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
-     freePeerConnection(&answerPc);
+@@ -1675,6 +1675,189 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
+     deinitializeSignalingClient();
  }
  
 +// Re-negotiation test: new offer with track removed. Connect with video+audio, then receive an offer

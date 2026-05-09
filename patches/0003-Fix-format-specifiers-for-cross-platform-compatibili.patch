@@ -1,4 +1,4 @@
-From ded19ec3ace0d8b9bee03d6beb0f1e0e8c311c3d Mon Sep 17 00:00:00 2001
+From dd8bc96d46d86b5e1a764d725af74c8ee73f97d8 Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Wed, 18 Feb 2026 11:46:00 +0530
 Subject: [PATCH 3/6] Fix format specifiers for cross-platform compatibility
@@ -12,7 +12,7 @@ Subject: [PATCH 3/6] Fix format specifiers for cross-platform compatibility
  1 file changed, 27 insertions(+), 16 deletions(-)
 
 diff --git a/tst/PeerConnectionFunctionalityTest.cpp b/tst/PeerConnectionFunctionalityTest.cpp
-index 9086c681fe..7915289aae 100644
+index 77891d16a7..bb06f9f3dd 100644
 --- a/tst/PeerConnectionFunctionalityTest.cpp
 +++ b/tst/PeerConnectionFunctionalityTest.cpp
 @@ -43,14 +43,15 @@ TEST_F(PeerConnectionFunctionalityTest, connectTwoPeersWithDelay)
@@ -75,7 +75,7 @@ index 9086c681fe..7915289aae 100644
  
      this->threads.clear();
      this->noNewThreads = TRUE;
-@@ -1302,7 +1306,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithSameIceCredentials)
+@@ -1352,7 +1356,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithSameIceCredentials)
  
      // Stop ICE candidate forwarding threads before re-negotiation
      this->lock.lock();
@@ -85,7 +85,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = FALSE;
      this->lock.unlock();
-@@ -1340,7 +1345,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithSameIceCredentials)
+@@ -1390,7 +1395,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithSameIceCredentials)
      EXPECT_EQ(0u, transceiverCount) << "Answerer should have no fake transceivers";
  
      this->lock.lock();
@@ -95,7 +95,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = TRUE;
      this->lock.unlock();
-@@ -1374,7 +1380,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithIceRestart)
+@@ -1468,7 +1474,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithIceRestart)
  
      // Stop ICE candidate forwarding threads before re-negotiation
      this->lock.lock();
@@ -105,7 +105,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = FALSE;
      this->lock.unlock();
-@@ -1403,7 +1410,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithIceRestart)
+@@ -1497,7 +1504,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithIceRestart)
      EXPECT_GE(ATOMIC_LOAD(&this->stateChangeCount[RTC_PEER_CONNECTION_STATE_CONNECTED]), (SIZE_T) 1);
  
      this->lock.lock();
@@ -115,7 +115,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = TRUE;
      this->lock.unlock();
-@@ -1447,7 +1455,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
+@@ -1603,7 +1611,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
  
      // Stop ICE candidate forwarding threads before re-negotiation
      this->lock.lock();
@@ -125,7 +125,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = FALSE;
      this->lock.unlock();
-@@ -1505,7 +1514,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
+@@ -1661,7 +1670,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithNewTransceiver)
      EXPECT_EQ(1u, transceiverCount) << "Answerer should have 1 user transceiver (audio)";
  
      this->lock.lock();
@@ -135,7 +135,7 @@ index 9086c681fe..7915289aae 100644
      this->threads.clear();
      this->noNewThreads = TRUE;
      this->lock.unlock();
-@@ -1542,7 +1552,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithTrackRemoved)
+@@ -1700,7 +1710,8 @@ TEST_F(PeerConnectionFunctionalityTest, renegotiateWithTrackRemoved)
      EXPECT_EQ(connectTwoPeers(offerPc, answerPc), TRUE);
  
      this->lock.lock();

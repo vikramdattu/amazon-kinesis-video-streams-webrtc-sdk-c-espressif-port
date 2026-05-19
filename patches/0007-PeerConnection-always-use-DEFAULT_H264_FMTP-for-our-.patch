@@ -1,0 +1,74 @@
+From d83e65ad53a04c7eb7ffa8700c160c73dffbabe2 Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Mon, 20 Apr 2026 21:12:07 +0530
+Subject: [PATCH] PeerConnection: always use DEFAULT_H264_FMTP for our SDP fmtp
+
+Previously the override of currentFmtp to DEFAULT_H264_FMTP was gated on
+isOffer. When answering, the SDK echoed back whatever H.264 fmtp the
+peer offered - including the peer's profile-level-id. For platforms
+whose decoder cannot handle every profile (for example the tinyh264
+software decoder on ESP32-P4/S3 which is Baseline-only), this meant a
+browser offering High or Main profile would negotiate successfully but
+then send a stream we could not decode, producing endless
+"profile_idc is error" / "ACCESS UNIT BOUNDARY CHECK" failures.
+
+DEFAULT_H264_FMTP already advertises level-asymmetry-allowed=1, which
+explicitly permits an answerer to use a different profile/level than
+the offer. The matched remote fmtp only affects codec *selection* (via
+getH264FmtpScore); once matched, we are entitled to advertise our own
+preferred parameters. This commit resolves the long-standing TODO that
+flagged exactly this case, and makes the answer path consistent with
+the offer path.
+
+No change for peers that already offer 42e01f. Peers that offered only
+High/Main will now receive a Baseline answer; if they cannot produce
+Baseline, they will drop video rather than send an undecodable stream.
+---
+ src/source/PeerConnection/SessionDescription.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
+index b8d5cad8d0..36f914d2eb 100644
+--- a/src/source/PeerConnection/SessionDescription.c
++++ b/src/source/PeerConnection/SessionDescription.c
+@@ -723,9 +723,18 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
+ 
+     if (pRtcMediaStreamTrack->codec == RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE) {
+         // TODO: Need additional condition for a signaling channel with an ENABLED media storage configuration
+-        if (pKvsPeerConnection->isOffer) {
+-            currentFmtp = DEFAULT_H264_FMTP;
+-        }
++        //
++        // Force DEFAULT_H264_FMTP for both offers and answers. Previously we
++        // only overrode currentFmtp when offering; answering inherited
++        // whatever the peer's fmtp was, which meant when a browser offered
++        // High/Main profile we agreed and then received a stream we couldn't
++        // decode on Baseline-only decoders (e.g., tinyh264 on ESP32-P4/S3).
++        //
++        // level-asymmetry-allowed=1 is included in DEFAULT_H264_FMTP and in
++        // practice in every peer's offer; it explicitly permits the answerer
++        // to pick different profile/level than the offer. This resolves the
++        // long-standing TODO on the fmtp echo below.
++        currentFmtp = DEFAULT_H264_FMTP;
+         STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "rtpmap");
+         amountWritten = SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
+                                  SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " H264/90000", payloadType);
+@@ -744,13 +753,14 @@ STATUS populateSingleMediaSection(PKvsPeerConnection pKvsPeerConnection, PKvsRtp
+         CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full H264 rtcp-fb nack-pli value could not be written");
+         attributeCount++;
+ 
+-        // TODO: If level asymmetry is allowed, consider sending back DEFAULT_H264_FMTP instead of the received fmtp value.
+         if (currentFmtp != NULL) {
+             STRCPY(pSdpMediaDescription->sdpAttributes[attributeCount].attributeName, "fmtp");
+             amountWritten =
+                 SNPRINTF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue,
+                          SIZEOF(pSdpMediaDescription->sdpAttributes[attributeCount].attributeValue), "%" PRId64 " %s", payloadType, currentFmtp);
+             CHK_ERR(amountWritten > 0, STATUS_INTERNAL_ERROR, "Full H264 fmtp value could not be written");
++            DLOGI("H264 fmtp advertised in %s: pt=%" PRId64 " %s",
++                  pKvsPeerConnection->isOffer ? "offer" : "answer", payloadType, currentFmtp);
+             attributeCount++;
+         }
+ 
+-- 
+2.39.5 (Apple Git-154)
+

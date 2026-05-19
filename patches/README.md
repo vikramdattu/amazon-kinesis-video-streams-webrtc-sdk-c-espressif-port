@@ -32,6 +32,8 @@ cd ..
 | 0003 | Fix format specifiers for cross-platform compatibility | aligned | test-only — track upstream |
 | 0004 | Network.c: Changes to support ESP-IDF | ESP-specific | n/a |
 | 0005 | ESP-IDF platform adaptations and robustness improvements | mixed | partial: [awslabs#2146](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2146) for the `PREFER_DYNAMIC_ALLOCS` portion |
+| 0007 | PeerConnection: always use `DEFAULT_H264_FMTP` for our offers/answers | aligned | [awslabs#2279](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2279) — resolves long-standing upstream TODO; drop when it lands |
+| 0008 | PeerConnection: cap peer Opus encoder at 16kHz mono via `DEFAULT_OPUS_FMTP` | ESP-specific | n/a — narrow-Opus negotiation keeps decode under the 20 ms frame budget on P4 |
 
 > **Removed (absorbed upstream):**
 >
@@ -79,6 +81,30 @@ two kinds of changes:
 Patch 0005 will be split into a `0005a-dynamic-allocs` (aligned) and a
 `0005b-esp-platform` (ESP-specific) once #2146 reaches upstream review.
 
+**0007 — Always use `DEFAULT_H264_FMTP` for our offers/answers.** Resolves a
+long-standing upstream TODO. Previously the override of `currentFmtp` to
+`DEFAULT_H264_FMTP` was gated on `isOffer`; when answering, the SDK echoed
+the peer's H.264 fmtp (including their `profile-level-id`). On platforms
+whose decoder cannot handle every profile (e.g. tinyh264 software decoder on
+ESP32-P4/S3 — Baseline only), a browser offering High/Main profile would
+negotiate successfully but send a stream we cannot decode, producing endless
+`profile_idc is error` / ACCESS UNIT BOUNDARY CHECK failures. Since
+`DEFAULT_H264_FMTP` already advertises `level-asymmetry-allowed=1`, the
+answerer is entitled to advertise its own profile. File an upstream PR; drop
+this patch when it lands.
+
+**0008 — Cap peer Opus encoder at 16 kHz mono via `DEFAULT_OPUS_FMTP`.** When
+the browser/Android peer defaults to 48 kHz stereo Opus (Fullband CELT), the
+P4 software decoder ends up at ~21 ms / 20 ms frame budget — decode queue
+saturates within seconds and every RX audio frame past 50/50 is dropped
+(`Audio decode queue full`, `ESP_ERR_NO_MEM`). Narrow `DEFAULT_OPUS_FMTP` to
+advertise `maxplaybackrate=16000; sprop-maxcapturerate=16000; stereo=0;
+sprop-stereo=0; maxaveragebitrate=24000`, and stop gating the fmtp override
+on `isOffer` so the answer path applies the cap too (same answer-side bug as
+patch 0007 for H.264). On bench this drops per-frame Opus decode from ~21 ms
+to ~5 ms at session start and eliminates queue-full / mem errors during the
+first ~15 s of bidir. ESP-specific because narrow Opus is a P4 capability
+trade — keep long-term.
 ## Patches-removal workstream
 
 The "aligned" patches above represent local divergence from upstream. A clean

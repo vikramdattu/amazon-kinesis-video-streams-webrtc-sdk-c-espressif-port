@@ -4,6 +4,7 @@
 #include "loader_utils.h"
 
 #include "esp_spiffs.h"
+#include "esp_heap_caps.h"
 #include "mbedtls/md5.h"
 
 #include "esp_console.h"
@@ -182,7 +183,7 @@ static esp_err_t check_and_flash_partition(const char *file_path, uint32_t addr)
 
     mbedtls_md5_context ctx;
     unsigned char digest[MD5_MAX_LEN];
-    uint8_t *chunk = malloc(MD5_CHUNK_SIZE);
+    uint8_t *chunk = heap_caps_malloc(MD5_CHUNK_SIZE, MALLOC_CAP_SPIRAM);
     if (!chunk) {
         ESP_LOGE(TAG, "Failed to allocate MD5 buffer for %s", file_path);
         fclose(f);
@@ -234,7 +235,7 @@ static esp_err_t check_and_flash_partition(const char *file_path, uint32_t addr)
         rewind(f);
         remaining = size;
         size_t written = 0;
-        uint8_t *flash_chunk = malloc(1024);  // Match flash_binary payload size
+        uint8_t *flash_chunk = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);  // Match flash_binary payload size
         if (!flash_chunk) {
             ESP_LOGE(TAG, "Failed to allocate flash buffer for %s", file_path);
             fclose(f);

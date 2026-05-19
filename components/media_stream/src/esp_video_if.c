@@ -4,9 +4,12 @@
  * SPDX-License-Identifier: ESPRESSIF MIT
  */
 
+#if !CONFIG_BSP_SELECT_NONE
+#include "bsp/esp-bsp.h"
+#endif
 #include "sdkconfig.h"
+#include <assert.h>
 
-#if CONFIG_IDF_TARGET_ESP32P4
 #include <inttypes.h>
 #include <string.h>
 #include <stdbool.h>
@@ -26,6 +29,7 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "linux/videodev2.h"
+#include "esp_video_if_cam_sel.h"
 
 #include "esp_video_init.h"
 #include "esp_video_device.h"
@@ -35,23 +39,13 @@
 #include "esp_h264_hw_enc.h"
 #include "bsp/esp-bsp.h"
 
-#if CONFIG_IDF_TARGET_ESP32P4
 /* Forward declaration of internal I2C init function */
 extern esp_err_t media_stream_i2c_init_safe(void);
-#endif
 
-#define ESP_VIDEO_MIPI_CSI_DEVICE_NAME      "/dev/video0"
-#define CAM_DEV_PATH        ESP_VIDEO_MIPI_CSI_DEVICE_NAME
 #define BUFFER_COUNT        3
 #define USE_V4L2_USERPTR    1
 #define USERPTR_ALIGNMENT   64
 #define USERPTR_HEAP_CAPS   (MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)
-
-#define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN    (GPIO_NUM_8)
-#define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN    (GPIO_NUM_7)
-#define CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ       (400000)
-#define CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN (-1)
-#define CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN (-1)
 
 typedef struct v4l2 {
     int cap_fd;
@@ -122,9 +116,9 @@ static esp_err_t init_camera(v4l2_src_t *v4l2)
     int fd;
     struct v4l2_capability capability;
 
-    fd = open(CAM_DEV_PATH, O_RDWR);
+    fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
     if (fd < 0) {
-        ESP_LOGE(TAG, "Failed to open camera device %s, errno: %d", CAM_DEV_PATH, errno);
+        ESP_LOGE(TAG, "Failed to open camera device %s, errno: %d", EXAMPLE_CAM_DEV_PATH, errno);
         return ESP_FAIL;
     }
 
@@ -730,30 +724,34 @@ esp_err_t esp_video_if_init(void)
     // If it exists, esp_video_init() is not needed because ISP is already registered
     // NOTE: This handles the case where esp_video_if_deinit() was called but ISP device
     // registration persists (no esp_video_deinit() API exists)
-    int test_fd = open(CAM_DEV_PATH, O_RDWR);
+    int test_fd = open(EXAMPLE_CAM_DEV_PATH, O_RDWR);
     if (test_fd >= 0) {
         close(test_fd);
         ESP_LOGI(TAG, "Video device already exists, using pre-initialized camera");
     } else {
         // Device doesn't exist - need to initialize I2C and esp_video to register ISP device
 
-        /* Ensure I2C is initialized using the safe initialization function */
-        esp_err_t i2c_ret = media_stream_i2c_init_safe();
+        /* media_stream_init() already brought the BSP I2C bus up; bsp_i2c_init()
+         * itself is idempotent, so call it again defensively in case this path
+         * is reached without media_stream_init() running first. */
+        esp_err_t i2c_ret = bsp_i2c_init();
         if (i2c_ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to initialize I2C: %s", esp_err_to_name(i2c_ret));
+            ESP_LOGE(TAG, "bsp_i2c_init failed: %s", esp_err_to_name(i2c_ret));
             free(v4l2);
             return ESP_FAIL;
         }
+
+        i2c_master_bus_handle_t i2c_handle = bsp_i2c_get_handle();
 
         esp_video_init_csi_config_t csi_config[] = {
             {
                 .sccb_config = {
                     .init_sccb = false,
-                    .i2c_handle = bsp_i2c_get_handle(),
-                    .freq = CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ,
+                    .i2c_handle = i2c_handle,
+                    .freq = EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ,
                 },
-                .reset_pin = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN,
-                .pwdn_pin  = CONFIG_EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN,
+                .reset_pin = EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN,
+                .pwdn_pin  = EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN,
             },
         };
 
@@ -841,4 +839,3 @@ esp_err_t esp_video_if_cleanup(void)
     ESP_LOGI(TAG, "Buffers and camera fd cleaned up");
     return ESP_OK;
 }
-#endif

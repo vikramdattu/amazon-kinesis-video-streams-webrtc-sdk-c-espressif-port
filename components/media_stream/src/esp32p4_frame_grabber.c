@@ -303,6 +303,13 @@ static void video_encoder_task(void *arg)
         // Get raw frame
         video_fb_t *raw_frame = esp_video_if_get_frame();
         if (!raw_frame) {
+            /* Log rate-limited so we can see if the encoder task is starved
+             * waiting for camera frames (ISP recovery during fast motion). */
+            static uint32_t null_frame_count;
+            null_frame_count++;
+            if (null_frame_count == 1 || (null_frame_count & 0x3F) == 0) {
+                ESP_LOGW(TAG, "esp_video_if_get_frame() returned NULL (count=%" PRIu32 ")", null_frame_count);
+            }
             vTaskDelay(pdMS_TO_TICKS(QUEUE_RECEIVE_WAIT_MS));
             continue;
         }
@@ -352,7 +359,11 @@ static void video_encoder_task(void *arg)
 
         // If encoding failed, continue to next frame
         if (!frame) {
-            ESP_LOGW(TAG, "Frame encoding failed");
+            static uint32_t enc_fail_count;
+            enc_fail_count++;
+            if (enc_fail_count == 1 || (enc_fail_count & 0x1F) == 0) {
+                ESP_LOGW(TAG, "esp_h264_hw_enc_encode_frame() failed (count=%" PRIu32 ")", enc_fail_count);
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -376,25 +387,63 @@ static void video_encoder_task(void *arg)
             }
         }
 
+        /* Skip empty encoder output. esp_h264_hw_enc_process_one_frame() can
+         * legitimately return ESP_OK with len=0 (e.g. skipped P-frame slot).
+         * Passing such a frame downstream produces calloc(_, 0) ->
+         * pathological tiny ptr -> later free() corrupts TLSF (same crash
+         * family as the Opus zero-frame bug seen in writeFrame heap fault).
+         */
+        if (h264_out_data.len == 0) {
+            continue;
+        }
+
         // frame copy
         esp_h264_out_buf_t *frame = calloc(1, sizeof(esp_h264_out_buf_t));
         if (!frame) {
             ESP_LOGE(TAG, "Failed to alloc frame");
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
         frame->len = h264_out_data.len;
         frame->buffer = heap_caps_aligned_calloc(64, 1, frame->len, MALLOC_CAP_SPIRAM);
         if (!frame->buffer) {
             ESP_LOGE(TAG, "Failed to alloc buffer. size %d", (int) frame->len);
+            free(frame);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
         esp_cache_msync(h264_out_data.buffer, (frame->len + 63) & ~63, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         memcpy(frame->buffer, h264_out_data.buffer, frame->len);
         frame->type = h264_out_data.type;
 #endif
+        bool queue_full = false;
         if (xQueueSend(s_p4_enc_data.frame_queue, frame, pdMS_TO_TICKS(QUEUE_SEND_WAIT_MS)) != pdTRUE) {
             free(frame->buffer);
             vTaskDelay(pdMS_TO_TICKS(10));
+            queue_full = true;
         }
         free(frame);
+
+        /* 1 s sliding-window encoder-out fps. Compare against the KVS DIAG
+         * `ok` counter and the receive-side `fps: rx=…` line to pinpoint
+         * where the pipeline saturates. */
+        static uint64_t enc_fps_window_start_us;
+        static uint32_t enc_fps_window_out;
+        static uint32_t enc_fps_window_full_drops;
+        enc_fps_window_out++;
+        if (queue_full) enc_fps_window_full_drops++;
+        uint64_t enc_now_us = esp_timer_get_time();
+        if (enc_fps_window_start_us == 0) {
+            enc_fps_window_start_us = enc_now_us;
+        } else if (enc_now_us - enc_fps_window_start_us >= 1000000ULL) {
+            uint64_t enc_window_us = enc_now_us - enc_fps_window_start_us;
+            uint32_t enc_fps = (uint32_t)((uint64_t)enc_fps_window_out * 1000000ULL / enc_window_us);
+            ESP_LOGI(TAG, "enc_fps: out=%" PRIu32 " (q_full_drops=%" PRIu32 ")",
+                     enc_fps, enc_fps_window_full_drops);
+            enc_fps_window_start_us = enc_now_us;
+            enc_fps_window_out = 0;
+            enc_fps_window_full_drops = 0;
+        }
     }
 
     ESP_LOGE(TAG, "Video encoder task unexpectedly exited!");
@@ -503,16 +552,20 @@ void esp32p4_frame_grabber_init(video_frame_preprocess_fn_t frame_preprocess_fn)
 
     esp_h264_setup_encoder(&cfg);
 
-#define ENC_TASK_STACK_SIZE     CONFIG_VIDEO_ENCODER_TASK_STACK_SIZE
+#define ENC_TASK_STACK_SIZE     (5 * 1024)
 #define ENC_TASK_PRIO           CONFIG_VIDEO_ENCODER_TASK_PRIORITY
+    /* TCB stays in INTERNAL — accessed from the scheduler tick ISR.
+     * Stack moves to SPIRAM (saves 5 KB of internal RAM) — encoder task
+     * doesn't run with cache disabled. Requires CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y. */
     s_p4_enc_data.task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
-    s_p4_enc_data.task_stack = heap_caps_calloc(ENC_TASK_STACK_SIZE, 1, MALLOC_CAP_SPIRAM);
+    s_p4_enc_data.task_stack = heap_caps_calloc(1, ENC_TASK_STACK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_p4_enc_data.task_buffer || !s_p4_enc_data.task_stack) {
         ESP_LOGE(TAG, "Failed to allocate task buffers");
         goto cleanup;
     }
 
     s_p4_enc_data.running = false;  // Start in stopped state
+    /* Video path pinned to core 1, leaving core 0 free for audio I/O. */
     s_p4_enc_data.encoder_task_handle = xTaskCreateStatic(video_encoder_task, "video_encoder", ENC_TASK_STACK_SIZE,
                                                           frame_preprocess_fn, ENC_TASK_PRIO, s_p4_enc_data.task_stack, s_p4_enc_data.task_buffer);
 

@@ -128,6 +128,14 @@ static void video_encoder_task(void *arg)
             continue;
         }
 
+        /* Skip empty encoder output — calloc(_, 0) returns a tiny pointer
+         * that NULL-checks pass and later free() corrupts TLSF (same crash
+         * family as the Opus zero-frame bug seen in writeFrame heap fault).
+         */
+        if (s_h264_enc_data.out_frame.length == 0) {
+            continue;
+        }
+
         esp_h264_out_buf_t frame = {0};
         /* Calculate the frame length */
         frame.len = s_h264_enc_data.out_frame.length;

@@ -479,6 +479,24 @@ media_stream_audio_player_t* media_stream_get_audio_player_if(void);
  */
 media_stream_video_player_t* media_stream_get_video_player_if(void);
 
+/**
+ * @brief Set microphone mute state (push-to-talk support)
+ *
+ * When muted, the encoder sends silence frames to keep the RTP stream
+ * alive while preventing mic audio from being transmitted. Useful for
+ * push-to-talk mode to avoid echo when AEC is not available.
+ *
+ * @param mute true to mute (default), false to unmute
+ */
+void opus_frame_grabber_set_mute(bool mute);
+
+/**
+ * @brief Get current microphone mute state
+ *
+ * @return true if muted, false if unmuted
+ */
+bool opus_frame_grabber_is_muted(void);
+
 #ifdef __cplusplus
 }
 #endif

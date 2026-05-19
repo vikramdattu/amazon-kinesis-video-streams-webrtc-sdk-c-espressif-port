@@ -6,7 +6,7 @@
 
 #include "sdkconfig.h"
 
-#if !defined(CONFIG_IDF_TARGET_ESP32P4)
+#if ESP_CAMERA_SUPPORTED
 #include "app_camera_esp.h"
 
 static const char *TAG = "app_camera";

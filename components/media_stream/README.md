@@ -15,7 +15,7 @@ The Media Stream component serves as the hardware abstraction layer between the 
 
 ### Video Components
 - **`H264FrameGrabber`**: Captures camera frames, encodes using H.264 encoder, and queues encoded frames
-- **`H264FramePlayer`**: Decodes H.264 frames and displays on LCD/output device
+- **`video_player_adapter` + `video_render_display`** (receive path): Decodes inbound H.264 with the `esp_h264` software decoder and renders to an LVGL canvas on the BSP's display. Off by default; enabled via `CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER=y`. See the [Video Player (receive path)](#video-player-receive-path) section.
 
 ### Audio Components
 - **`OpusFrameGrabber`**: Records I2S audio data, encodes using Opus encoder, and queues encoded frames
@@ -152,3 +152,94 @@ webrtc_config.video_capture = my_custom_camera_if_get();
 - **ESP32-P4** with advanced camera and audio capabilities
 - **ESP32** with external camera/audio via I2S/SPI
 - **Custom hardware** via interface implementation
+
+## Video Player (receive path)
+
+The receive path lets the device decode an inbound H.264 video stream from a
+WebRTC peer connection and render it on a connected display. It is disabled
+by default so builds that only send video stay lean.
+
+### Enabling
+
+1. Turn on the Kconfig:
+
+   ```
+   CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER=y
+   ```
+
+   Tune the queue depth, task stack, priority, and max resolution caps under
+   `Media Stream Configuration -> Video Player (receive path)` in menuconfig.
+
+2. Wire the interface into `app_webrtc_config.video_player`. In
+   `webrtc_classic/main/webrtc_main.c` this is a one-line assignment:
+
+   ```c
+   media_stream_video_player_t *video_player = media_stream_get_video_player_if();
+   ...
+   app_webrtc_config.video_player = video_player;
+   ```
+
+3. Ensure the target has a display resolved by `bsp_selector` and LVGL. The
+   render backend calls `bsp_display_start()` and creates an LVGL canvas on
+   the active screen.
+
+### Pipeline
+
+```
+  RTP -> H.264 Annex-B NAL bytes
+     |
+     v
+  video_player_play_frame()  (copy into SPIRAM frame descriptor, enqueue)
+     |
+     v
+  decode task  (per-player, SPIRAM task stack)
+     |
+     v
+  esp_h264_dec_sw_new / _process   -> I420 YUV
+     |
+     v
+  video_render_display_render_i420()
+     |-- fixed-point BT.601 YUV->RGB565
+     |-- nearest-neighbour scale to the LVGL canvas size
+     v
+  LVGL canvas on BSP display
+```
+
+### Target support
+
+| Target       | Decoder       | Convert / scale | Notes                                  |
+|--------------|---------------|-----------------|----------------------------------------|
+| ESP32-P4     | `esp_h264` SW | CPU YUV->RGB565 | Tested on P4-EYE; any P4 display board works via bsp_selector + LVGL |
+| ESP32-S3    | `esp_h264` SW | CPU YUV->RGB565 | Needs a display-capable BSP            |
+| Other P-class | `esp_h264` SW | CPU YUV->RGB565 | BSP + LVGL required                    |
+
+A PPA-accelerated YUV->RGB path (using `ppa_do_scale_rotate_mirror`) is a
+future optimisation; the conversion is isolated in a single helper in
+`video_render_display.c` so it can be dropped in without touching the
+public API.
+
+### Resolution cap
+
+The player is capped at **320x240** by default. This matches the P4-EYE
+LCD (240x240) and is the realistic ceiling for sustained live playback
+with the `esp_h264` software decoder + CPU YUV->RGB565 convert path.
+The peer can advertise larger resolutions; the decoder still runs, but
+the render canvas is sized to the cap. Tighten further via
+`CONFIG_MEDIA_STREAM_PLAYER_MAX_WIDTH` / `_MAX_HEIGHT`.
+
+### Memory footprint
+
+All sizeable allocations live in SPIRAM:
+- decode task stack (`CONFIG_MEDIA_STREAM_PLAYER_TASK_STACK`, default 8 KB),
+- per-frame NAL buffer copies in the queue,
+- the RGB565 canvas buffer (`canvas_w x canvas_h x 2` bytes; at the 320x240
+  cap, ~150 KB).
+
+Only tiny control structs and the FreeRTOS queue itself (pointer-sized
+slots) stay on the internal heap.
+
+### Backpressure
+
+The frame queue drops non-keyframes when full and drains completely on a
+keyframe so the decoder resynchronises from a fresh GOP. On decode error
+the adapter enters a "wait for next IDR" state until a keyframe arrives.

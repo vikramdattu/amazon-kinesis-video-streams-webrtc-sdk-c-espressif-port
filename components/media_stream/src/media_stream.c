@@ -14,86 +14,10 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "media_stream.h"
-#if CONFIG_IDF_TARGET_ESP32P4
 #include "bsp/esp-bsp.h"
-#endif
+#include "driver/i2c_master.h"
 
 static const char *TAG = "media_stream";
-
-#if CONFIG_IDF_TARGET_ESP32P4
-static SemaphoreHandle_t s_i2c_init_mutex = NULL;
-static bool s_i2c_initialized = false;
-
-/**
- * @brief Thread-safe I2C initialization that ensures I2C is initialized only once
- *
- * This function can be called from multiple threads/components safely.
- * It checks if I2C is already initialized before attempting to initialize it.
- *
- * @return ESP_OK on success, ESP_FAIL on error
- */
-esp_err_t media_stream_i2c_init_safe(void)
-{
-    if (s_i2c_init_mutex == NULL) {
-        s_i2c_init_mutex = xSemaphoreCreateMutex();
-        if (s_i2c_init_mutex == NULL) {
-            ESP_LOGE(TAG, "Failed to create I2C init mutex");
-            return ESP_FAIL;
-        }
-    }
-
-    if (xSemaphoreTake(s_i2c_init_mutex, portMAX_DELAY) != pdTRUE) {
-        ESP_LOGE(TAG, "Failed to take I2C init mutex");
-        return ESP_FAIL;
-    }
-
-    esp_err_t ret = ESP_OK;
-
-    /* Check if I2C handle is already available (initialized by another component) */
-    if (bsp_i2c_get_handle() != NULL) {
-        s_i2c_initialized = true;
-        ESP_LOGD(TAG, "I2C already initialized by another component");
-        goto done;
-    }
-
-    /* Check our internal flag to avoid double initialization */
-    if (s_i2c_initialized) {
-        ESP_LOGD(TAG, "I2C already initialized (internal flag)");
-        goto done;
-    }
-
-    /* Initialize I2C - the component manager version uses ESP_ERROR_CHECK internally,
-     * so if it fails (e.g., bus already acquired), it will abort. We check handle first
-     * to avoid this, but there's still a race condition possibility. */
-    ret = bsp_i2c_init();
-    if (ret == ESP_OK) {
-        s_i2c_initialized = true;
-        ESP_LOGI(TAG, "I2C initialized successfully");
-    } else if (ret == ESP_ERR_INVALID_STATE) {
-        /* Bus already acquired - check if handle is now available */
-        if (bsp_i2c_get_handle() != NULL) {
-            s_i2c_initialized = true;
-            ESP_LOGD(TAG, "I2C was initialized by another thread (ESP_ERR_INVALID_STATE)");
-            ret = ESP_OK;
-        } else {
-            ESP_LOGE(TAG, "I2C init returned ESP_ERR_INVALID_STATE but handle is NULL");
-        }
-    } else {
-        /* Check if handle became available (race condition where another thread initialized it) */
-        if (bsp_i2c_get_handle() != NULL) {
-            s_i2c_initialized = true;
-            ESP_LOGD(TAG, "I2C was initialized by another thread during init");
-            ret = ESP_OK;
-        } else {
-            ESP_LOGE(TAG, "Failed to initialize I2C: %s", esp_err_to_name(ret));
-        }
-    }
-
-done:
-    xSemaphoreGive(s_i2c_init_mutex);
-    return ret;
-}
-#endif
 
 #define NUMBER_OF_H264_FRAME_FILES               60 //1500
 #define NUMBER_OF_H265_FRAME_FILES               1500
@@ -705,11 +629,14 @@ esp_err_t media_stream_init(video_capture_handle_t *video_handle, audio_capture_
         .codec_specific = NULL
     };
 
-    // Initialize audio capture with Opus configuration
+    // Initialize audio capture with Opus configuration.
+    // 16 kHz mono end-to-end: SDP fmtp `maxplaybackrate=16000` (the Opus
+    // narrowing patch) caps the peer at 16 kHz; running the encoder at a
+    // higher rate would just waste CPU since the peer downsamples anyway.
     audio_capture_config_t audio_config = {
         .codec = AUDIO_CODEC_OPUS,
         .format = {
-            .sample_rate = 48000,
+            .sample_rate = 16000,
             .channels = 1,
             .bits_per_sample = 16
         },
@@ -743,11 +670,16 @@ esp_err_t media_stream_init(video_capture_handle_t *video_handle, audio_capture_
         .codec_specific = NULL
     };
 
-#if CONFIG_IDF_TARGET_ESP32P4
-    /* Initialize I2C early, before video or audio init, to avoid double initialization */
-    ret = media_stream_i2c_init_safe();
+#if CONFIG_IDF_TARGET_ESP32P4 && !CONFIG_BSP_SELECT_NONE
+    /* Bring the BSP I2C bus up once, here. Camera SCCB (via
+     * bsp_i2c_get_handle()) and the ES8311 codec init both share this bus,
+     * and the BSP's own bsp_i2c_init() is idempotent — letting the BSP own
+     * the bus avoids the previous wrapper, which tried to second-guess
+     * pull-up / handle state and ended up racing with the codec init at
+     * session start. */
+    ret = bsp_i2c_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize I2C");
+        ESP_LOGE(TAG, "bsp_i2c_init failed: %s", esp_err_to_name(ret));
         return ret;
     }
 #endif

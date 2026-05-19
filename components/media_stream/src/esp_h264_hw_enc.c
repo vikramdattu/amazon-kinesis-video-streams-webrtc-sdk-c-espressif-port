@@ -254,7 +254,7 @@ esp_err_t esp_h264_hw_enc_set_reset_request()
 
 #define MIN_BITRTATE_DELTA  (10 * 1024)
 #define MIN_BITRATE         (500 * 1024)
-#define MAX_BITRATE         (3 * 1024 * 1024)
+#define MAX_BITRATE         (2 * 1024 * 1024)
 esp_err_t esp_h264_hw_enc_set_bitrate(uint32_t bitrate)
 {
     // ESP_LOGI(TAG, "received bitrate suggestion: %d", (int) bitrate);

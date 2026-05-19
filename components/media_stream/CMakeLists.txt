@@ -16,13 +16,21 @@ else()
         "src/audio_capture_adapter.c"
         "src/audio_player_adapter.c"
         "src/video_player_adapter.c"
+        "src/h264_nalu_utils.c"
+        "src/video_render_display.c"
         "src/media_stream.c"
     )
+endif()
+
+set(priv_reqs "")
+if(CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER)
+    list(APPEND priv_reqs espressif__esp_h264)
 endif()
 
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "include"
     REQUIRES esp_driver_jpeg
+    PRIV_REQUIRES ${priv_reqs}
     PRIV_INCLUDE_DIRS "src"
 )

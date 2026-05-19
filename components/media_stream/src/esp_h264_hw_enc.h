@@ -30,7 +30,7 @@ typedef void data_write_cb_t(void *ctx, esp_h264_out_buf_t *out_data);
         .width = WIDTH, \
         .height = HEIGHT, \
     }, \
-    .rc.bitrate = 1 * 1024 * 1024, \
+    .rc.bitrate = (512 * 1024), \
     .rc.qp_min = 30, \
     .rc.qp_max = 40, \
     .pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY, \

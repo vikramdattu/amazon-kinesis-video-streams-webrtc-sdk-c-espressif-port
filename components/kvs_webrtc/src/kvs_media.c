@@ -280,6 +280,74 @@ static PVOID kvs_global_video_sender_thread(PVOID args)
             frame.presentationTs = (esp_timer_get_time() * HUNDREDS_OF_NANOS_IN_A_MICROSECOND) - startTime;
             frame.decodingTs = frame.presentationTs;
 
+            /* TX H.264 NAL accounting on key frames. Inline Annex-B scan
+             * rather than cross-component dep on media_stream's h264_nalu_utils.
+             *
+             * What we want to know:
+             *  1. The encoder profile we're putting on the wire (one-shot,
+             *     logged on first/changed).
+             *  2. Whether SPS *and* PPS are being repeated on EVERY IDR.
+             *     If not, an Android HW decoder will rebind state at the
+             *     first IDR and then drop every subsequent P-frame because
+             *     it can't trust the ref chain — phone shows ~GOP-rate fps
+             *     (1 fps observed at GOP=20 / 22 fps source).
+             *
+             * Counters dumped every 50 IDRs alongside total/has-SPS/has-PPS. */
+            static UINT8  last_profile_idc, last_constraint, last_level;
+            static BOOL   seen_profile;
+            static UINT32 idr_total, idr_with_sps, idr_with_pps;
+            if ((frame.flags & FRAME_FLAG_KEY_FRAME) != FRAME_FLAG_NONE && frame.frameData && frame.size > 4) {
+                idr_total++;
+                BOOL has_sps_this_frame = FALSE;
+                BOOL has_pps_this_frame = FALSE;
+                const UINT8 *d = frame.frameData;
+                UINT32 n = frame.size;
+                /* Walk all Annex-B NALs in this access unit. */
+                for (UINT32 i = 0; i + 4 < n; ++i) {
+                    if (d[i] != 0 || d[i + 1] != 0) continue;
+                    UINT32 hdr_off;
+                    if (d[i + 2] == 1)                       hdr_off = i + 3;
+                    else if (d[i + 2] == 0 && d[i + 3] == 1) hdr_off = i + 4;
+                    else continue;
+                    if (hdr_off >= n) break;
+                    UINT8 nal_type = d[hdr_off] & 0x1F;
+                    if (nal_type == 7 /* SPS */) {
+                        has_sps_this_frame = TRUE;
+                        if (hdr_off + 3 < n &&
+                            (!seen_profile ||
+                             d[hdr_off + 1] != last_profile_idc ||
+                             d[hdr_off + 2] != last_constraint ||
+                             d[hdr_off + 3] != last_level)) {
+                            UINT8 prof = d[hdr_off + 1];
+                            UINT8 cons = d[hdr_off + 2];
+                            UINT8 lev  = d[hdr_off + 3];
+                            ESP_LOGI(TAG, "sending SPS: profile_idc=0x%02x constraint=0x%02x level_idc=%u (%s)",
+                                     prof, cons, (unsigned)lev,
+                                     prof == 66  ? "Baseline" :
+                                     prof == 77  ? "Main"     :
+                                     prof == 88  ? "Extended" :
+                                     prof == 100 ? "High"     :
+                                     prof == 110 ? "High10"   :
+                                     prof == 122 ? "High422"  : "Unknown");
+                            last_profile_idc = prof;
+                            last_constraint  = cons;
+                            last_level       = lev;
+                            seen_profile     = TRUE;
+                        }
+                    } else if (nal_type == 8 /* PPS */) {
+                        has_pps_this_frame = TRUE;
+                    }
+                }
+                if (has_sps_this_frame) idr_with_sps++;
+                if (has_pps_this_frame) idr_with_pps++;
+                if (idr_total % 50 == 0) {
+                    ESP_LOGI(TAG, "TX H.264 IDR accounting: total=%" PRIu32 " w/SPS=%" PRIu32 " w/PPS=%" PRIu32 " (%.0f%% / %.0f%%)",
+                             idr_total, idr_with_sps, idr_with_pps,
+                             100.0 * idr_with_sps / idr_total,
+                             100.0 * idr_with_pps / idr_total);
+                }
+            }
+
             /* Log every 100 frames to monitor FPS and frame drops */
             if (video_frame_index % 100 == 0) {
                 UINT64 pts_ms = frame.presentationTs / HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
@@ -408,9 +476,7 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
     media_stream_audio_capture_t *audio_capture = NULL;
     audio_frame_t *audio_frame = NULL;
     UINT64 frame_duration_100ns = KVS_SAMPLE_AUDIO_FRAME_DURATION; // Default 20ms
-    UINT64 last_send_time_us = 0; // Track last frame send time for rate control
     UINT32 frame_duration_ms = 20; // Default audio frame duration
-    UINT64 frame_interval_us = 0; // Frame interval in microseconds
 
     ESP_LOGD(TAG, "Global audio sender thread started");
 
@@ -419,12 +485,10 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
     if (g_global_media.config.audio_capture != NULL && g_global_media.audio_handle != NULL) {
         audio_capture = (media_stream_audio_capture_t*)g_global_media.config.audio_capture;
 
-        // Store frame duration for rate control (matches config used in init)
         frame_duration_ms = 20; // Default audio frame duration
         frame_duration_100ns = frame_duration_ms * HUNDREDS_OF_NANOS_IN_A_MILLISECOND;
-        frame_interval_us = frame_duration_ms * 1000ULL; // Convert ms to microseconds
-        ESP_LOGI(TAG, "Audio frame rate control: %" PRIu32 " ms per frame (frame interval: %llu us)",
-                 frame_duration_ms, frame_interval_us);
+        ESP_LOGI(TAG, "Audio sender: %" PRIu32 " ms per frame, wall-clock timestamps",
+                 frame_duration_ms);
     } else {
         goto CleanupAudio;
     }
@@ -442,7 +506,6 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
     /* esp_timer_get_time() returns microseconds since boot. Not affected by time sync */
     startTime = esp_timer_get_time() * HUNDREDS_OF_NANOS_IN_A_MICROSECOND;
     UINT64 audio_frame_index = 0;  /* Local frame counter for audio */
-    last_send_time_us = 0; // Initialize frame timing
 
     while (!ATOMIC_LOAD_BOOL(&g_global_media.terminated)) {
         BOOL frame_available = FALSE;
@@ -460,9 +523,30 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
             audio_frame_index++;
             frame.index = (UINT32)audio_frame_index;
 
-            /* Use real timestamp based on elapsed time since start. Not affected by time sync */
+            /* Use wall-clock timestamps so audio and video share the same time
+             * reference — counter-based audio PTS (uniform 20 ms increments)
+             * drifts away from video's wall-clock PTS whenever the audio
+             * encoder doesn't run *exactly* every 20 ms (which it cannot
+             * guarantee under bidirectional load). The receiver schedules
+             * presentation off the SR's NTP/RTP pair derived from these PTS;
+             * once the two tracks' clocks diverge, the phone discards video
+             * frames as "late/early" relative to audio and never recovers.
+             * The previous concern (jitter on the receive side) is mitigated
+             * by the fact that get_frame() is paced by I2S DMA, so encode
+             * time follows capture time within a small bounded delta. */
             frame.presentationTs = (esp_timer_get_time() * HUNDREDS_OF_NANOS_IN_A_MICROSECOND) - startTime;
             frame.decodingTs = frame.presentationTs;
+
+            /* PTS divergence diagnostic: every 100 frames print audio_pts,
+             * approx-counter-based-pts, and the delta — confirms wall-clock
+             * stays bounded vs the alternative counter timeline. */
+            if (audio_frame_index % 100 == 0) {
+                UINT64 audio_pts_us = frame.presentationTs / HUNDREDS_OF_NANOS_IN_A_MICROSECOND;
+                UINT64 counter_pts_us = (audio_frame_index * frame_duration_100ns) / HUNDREDS_OF_NANOS_IN_A_MICROSECOND;
+                INT64 delta_us = (INT64)audio_pts_us - (INT64)counter_pts_us;
+                ESP_LOGI(TAG, "PTS audio: idx=%" PRIu64 " wall=%" PRIu64 "us counter=%" PRIu64 "us delta=%+lldus",
+                         audio_frame_index, audio_pts_us, counter_pts_us, (long long)delta_us);
+            }
 
             // Check termination before send to avoid blocking on shutdown
             if (ATOMIC_LOAD_BOOL(&g_global_media.terminated)) {
@@ -479,37 +563,14 @@ static PVOID kvs_global_audio_sender_thread(PVOID args)
                 ESP_LOGW(TAG, "Failed to send frame to sessions: 0x%08" PRIx32, (UINT32)send_status);
             }
 
-            // Get end time after send completes
-            UINT64 send_end_time_us = esp_timer_get_time();
-
             /* Log if frame send is slow (bottleneck detection) */
-            if (sendDuration > 20 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND) {  // >20ms is concerning for audio
+            if (sendDuration > 20 * HUNDREDS_OF_NANOS_IN_A_MILLISECOND) {
                 ESP_LOGW(TAG, "Slow audio frame send: %llums (frame %" PRIu64 "), size: %" PRIu32,
                          sendDuration / HUNDREDS_OF_NANOS_IN_A_MILLISECOND, audio_frame_index, frame.size);
             }
-
-            // Frame rate control: maintain target FPS by sleeping between sends
-            if (last_send_time_us > 0) {
-                INT64 time_since_last_send_us = (INT64)(send_end_time_us - last_send_time_us);
-
-                // If we sent too quickly, sleep the remaining time to maintain target FPS
-                if (time_since_last_send_us < (INT64)frame_interval_us) {
-                    UINT64 sleep_time_us = frame_interval_us - time_since_last_send_us;
-                    if (sleep_time_us > 1000) {
-                        // Sleep if delay is significant (>1ms)
-                        THREAD_SLEEP(sleep_time_us * 10); // Convert microseconds to 100ns units
-                        last_send_time_us = esp_timer_get_time();
-                    } else {
-                        last_send_time_us = send_end_time_us;
-                    }
-                } else {
-                    // We're behind schedule, update timestamp and continue immediately
-                    last_send_time_us = send_end_time_us;
-                }
-            } else {
-                // First frame - just record the time
-                last_send_time_us = send_end_time_us;
-            }
+            /* No rate-control sleep here: get_frame() already blocks on xQueueReceive
+             * until the I2S DMA produces the next 20ms frame — natural pacing. Adding a
+             * sleep on top would push dequeue later, increasing timestamp jitter. */
 
             // Release microphone frame if used
             if (audio_capture != NULL && audio_frame != NULL) {
@@ -584,11 +645,21 @@ static STATUS kvs_session_frame_callback(UINT64 callerData, PHashEntry pHashEntr
         transceiver = session->audio_transceiver;
     }
 
+    /* Per-track success counters so we can read video send fps directly
+     * (the original `ok` mixes audio + video, masking video drops). */
+    static UINT32 ok_video_count = 0;
+    static UINT32 ok_audio_count = 0;
+
     /* CRITICAL: Only call writeFrame if transceiver is valid and session is still active */
     if (transceiver != NULL && !session->terminated && session->peer_connection != NULL) {
         writeStatus = writeFrame(transceiver, frame);
         if (writeStatus == STATUS_SUCCESS) {
-            diag_drop_reason_count[6]++;  /* Success counter */
+            diag_drop_reason_count[6]++;  /* Success counter (combined) */
+            if (frame->trackId == DEFAULT_VIDEO_TRACK_ID) {
+                ok_video_count++;
+            } else if (frame->trackId == DEFAULT_AUDIO_TRACK_ID) {
+                ok_audio_count++;
+            }
         } else if (writeStatus == STATUS_SRTP_NOT_READY_YET) {
             diag_drop_reason_count[5]++;  /* SRTP not ready counter */
         } else {
@@ -602,12 +673,28 @@ static STATUS kvs_session_frame_callback(UINT64 callerData, PHashEntry pHashEntr
     }
 
 DiagLog:
-    /* Periodic diagnostic log - fires on ALL paths including early exits */
+    /* Periodic diagnostic log - fires on ALL paths including early exits.
+     * Bumped to INFO so the send-side fps is visible at the default log
+     * level (the `ok` counter delta divided by the window is sender fps;
+     * compare against the per-second `fps: rx=…` line in
+     * video_player_adapter.c on the receive side). */
     {
         UINT64 now = GETTIME();
         if (now - diag_last_log_time > 2 * HUNDREDS_OF_NANOS_IN_A_SECOND) {
+            /* Compute per-track fps over this 2 s window. Reset window
+             * counters after logging so each line is the latest interval. */
+            static UINT32 prev_ok_video = 0;
+            static UINT32 prev_ok_audio = 0;
+            UINT64 dt_ns = now - diag_last_log_time;
+            UINT32 v_delta = ok_video_count - prev_ok_video;
+            UINT32 a_delta = ok_audio_count - prev_ok_audio;
+            UINT32 v_fps = (UINT32)((UINT64)v_delta * HUNDREDS_OF_NANOS_IN_A_SECOND / dt_ns);
+            UINT32 a_fps = (UINT32)((UINT64)a_delta * HUNDREDS_OF_NANOS_IN_A_SECOND / dt_ns);
+            prev_ok_video = ok_video_count;
+            prev_ok_audio = ok_audio_count;
             diag_last_log_time = now;
-            ESP_LOGD(TAG, "DIAG frame_cb: null_entry=%" PRIu32 " terminated=%" PRIu32 " no_pc=%" PRIu32 " not_connected=%" PRIu32 " no_xcvr=%" PRIu32 " srtp_notready=%" PRIu32 " ok=%" PRIu32 " fail=%" PRIu32 " | last_kvs_state=%d media_started=%d session=%p",
+            ESP_LOGI(TAG, "DIAG frame_cb: send_v_fps=%" PRIu32 " send_a_fps=%" PRIu32 " | null_entry=%" PRIu32 " terminated=%" PRIu32 " no_pc=%" PRIu32 " not_connected=%" PRIu32 " no_xcvr=%" PRIu32 " srtp_notready=%" PRIu32 " ok=%" PRIu32 " fail=%" PRIu32 " | last_kvs_state=%d media_started=%d session=%p",
+                     v_fps, a_fps,
                      diag_drop_reason_count[0], diag_drop_reason_count[1], diag_drop_reason_count[2],
                      diag_drop_reason_count[3], diag_drop_reason_count[4], diag_drop_reason_count[5],
                      diag_drop_reason_count[6], diag_drop_reason_count[7],
@@ -773,8 +860,11 @@ STATUS kvs_media_start_global_transmission(void* client_data, kvs_media_config_t
 
     // Start global video thread only if video capture is provided and initialized successfully
     if (config->video_capture != NULL && g_global_media.video_handle != NULL) {
-        CHK_STATUS(THREAD_CREATE_EX_EXT(&g_global_media.video_sender_tid, "kvsGlobalVideo", 8 * 1024, TRUE,
-                                        kvs_global_video_sender_thread, NULL));
+        /* Explicit prio 5 (pthread default) so the relationship with kvsGlobalAudio is
+         * obvious: audio is one slot above so its frames reach the wire first when both
+         * are runnable. Keep below connListener (6) and i2s_read (9). */
+        CHK_STATUS(THREAD_CREATE_EX_PRI(&g_global_media.video_sender_tid, "kvsGlobalVideo", 6 * 1024, TRUE,
+                                        kvs_global_video_sender_thread, 5, NULL));
         ESP_LOGI(TAG, "Global video sender thread started");
     } else {
         if (config->video_capture != NULL) {
@@ -818,8 +908,11 @@ STATUS kvs_media_start_global_transmission(void* client_data, kvs_media_config_t
 
     // Start global audio thread only if audio capture is provided and initialized successfully
     if (config->audio_capture != NULL && g_global_media.audio_handle != NULL) {
-        CHK_STATUS(THREAD_CREATE_EX_EXT(&g_global_media.audio_sender_tid, "kvsGlobalAudio", 8 * 1024, TRUE,
-                                        kvs_global_audio_sender_thread, NULL));
+        /* prio 6 — one above kvsGlobalVideo, one above pthread default. Audio frame
+         * loss is audible; video can adapt. Stays at or below connListener (6) so
+         * inbound RTP isn't held off, and well below i2s_read (9). */
+        CHK_STATUS(THREAD_CREATE_EX_PRI(&g_global_media.audio_sender_tid, "kvsGlobalAudio", 6 * 1024, TRUE,
+                                    kvs_global_audio_sender_thread, 6, NULL));
         ESP_LOGI(TAG, "Global audio sender thread started");
     } else if (config->audio_capture != NULL && g_global_media.audio_handle == NULL) {
         ESP_LOGW(TAG, "Audio capture provided but initialization failed - skipping audio transmission");
@@ -1051,19 +1144,23 @@ STATUS kvs_media_setup_frame_callbacks(kvs_pc_session_t* session)
         goto CleanUp;
     }
 
-    // Set up video frame callback
+    // Set up video frame callback. Both video and audio transceivers can
+    // legitimately be NULL on the initial offer (audio-only call, no camera
+    // enabled yet on the remote). Skip the one that isn't present so the
+    // other still gets wired. The caller now re-invokes this on every offer,
+    // so a transceiver that appears later (e.g. via renegotiation when the
+    // remote enables its camera) gets picked up then.
     if (session->video_transceiver == NULL) {
-        ESP_LOGW(TAG, "video_transceiver is NULL for peer: %s - cannot set up video callback", session->peer_id);
-        CHK(FALSE, retStatus);  // Return error to retry later
+        ESP_LOGD(TAG, "video_transceiver is NULL for peer: %s - skipping video callback (will retry on next offer)", session->peer_id);
+    } else {
+        CHK_STATUS(transceiverOnFrame(session->video_transceiver,
+                                      POINTER_TO_HANDLE(session),
+                                      kvs_media_video_frame_handler));
     }
-
-    CHK_STATUS(transceiverOnFrame(session->video_transceiver,
-                                  POINTER_TO_HANDLE(session),
-                                  kvs_media_video_frame_handler));
 
     // Set up audio frame callback
     if (session->audio_transceiver == NULL) {
-        ESP_LOGW(TAG, "audio_transceiver is NULL for peer: %s - cannot set up audio callback", session->peer_id);
+        ESP_LOGD(TAG, "audio_transceiver is NULL for peer: %s - skipping audio callback (will retry on next offer)", session->peer_id);
     } else {
         CHK_STATUS(transceiverOnFrame(session->audio_transceiver,
                                       POINTER_TO_HANDLE(session),

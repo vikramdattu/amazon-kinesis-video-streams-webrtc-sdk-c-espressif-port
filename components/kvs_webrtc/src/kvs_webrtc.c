@@ -1736,6 +1736,9 @@ static STATUS kvs_initializePeerConnection(kvs_pc_client_t* client, PRtcPeerConn
             }
             ESP_LOGI(TAG, "ICE server %" PRIu32 ": %s", i, configuration.iceServers[i].urls);
         }
+    } else if (client->config.ice_server_count == 0 && client->config.ice_servers == NULL) {
+        /* ICE servers explicitly cleared (e.g. local LAN session) — host candidates only */
+        ESP_LOGI(TAG, "Creating peer connection without ICE servers (host candidates only)");
     } else {
         // Fallback to hardcoded STUN server
         SNPRINTF(configuration.iceServers[0].urls, MAX_ICE_CONFIG_URI_LEN, APP_WEBRTC_DEFAULT_STUN_SERVER);
@@ -1915,32 +1918,49 @@ static STATUS kvs_handleOffer(kvs_pc_session_t* session, webrtc_message_t* messa
     }
 
     // Set up frame reception callbacks AFTER setRemoteDescription and setLocalDescription
-    // This ensures transceivers are fully initialized and ready to receive frames
-    if (session->client->config.receive_media && !session->media_threads_started) {
-        kvs_media_config_t media_config = {
-            .video_capture = session->client->config.video_capture,
-            .audio_capture = session->client->config.audio_capture,
-            .video_player = session->client->config.video_player,
-            .audio_player = session->client->config.audio_player,
-            .receive_media = session->client->config.receive_media,
-            .video_width = session->client->config.video_width,
-            .video_height = session->client->config.video_height,
-            .video_fps = session->client->config.video_fps
-        };
+    // This ensures transceivers are fully initialized and ready to receive frames.
+    //
+    // Two-stage gate:
+    //   1. Player init runs only once per session (gated on media_threads_started)
+    //      — re-init would tear down + recreate the decoder.
+    //   2. Frame-callback registration runs on EVERY offer. When the peer
+    //      renegotiates (e.g. phone enables its camera mid-session), a new
+    //      video_transceiver appears and its onFrame handler MUST be wired
+    //      — otherwise RTP video lands without a callback and is silently
+    //      dropped, leaving the device's decoder idle while RTP is flowing.
+    if (session->client->config.receive_media) {
+        if (!session->media_threads_started) {
+            kvs_media_config_t media_config = {
+                .video_capture = session->client->config.video_capture,
+                .audio_capture = session->client->config.audio_capture,
+                .video_player = session->client->config.video_player,
+                .audio_player = session->client->config.audio_player,
+                .receive_media = session->client->config.receive_media,
+                .video_width = session->client->config.video_width,
+                .video_height = session->client->config.video_height,
+                .video_fps = session->client->config.video_fps
+            };
 
-        session->client->config.video_player = media_config.video_player;
-        session->client->config.audio_player = media_config.audio_player;
-        session->client->config.receive_media = media_config.receive_media;
+            session->client->config.video_player = media_config.video_player;
+            session->client->config.audio_player = media_config.audio_player;
+            session->client->config.receive_media = media_config.receive_media;
 
-        STATUS ret = kvs_media_setup_players(session, &media_config);
-        if (STATUS_SUCCEEDED(ret)) {
+            STATUS ret = kvs_media_setup_players(session, &media_config);
+            if (STATUS_FAILED(ret)) {
+                ESP_LOGE(TAG, "Failed to set up media players: 0x%08" PRIx32, (UINT32)ret);
+            } else {
+                session->media_threads_started = TRUE;
+            }
+        }
+        /* Always re-register frame callbacks. Picks up transceivers that
+         * just appeared via SDP renegotiation. transceiverOnFrame() is
+         * idempotent — re-registering on an existing transceiver simply
+         * overwrites the same callback. */
+        if (session->media_threads_started) {
             STATUS callback_ret = kvs_media_setup_frame_callbacks(session);
             if (STATUS_FAILED(callback_ret)) {
-                ESP_LOGE(TAG, "Failed to set up frame callbacks: 0x%08" PRIx32, (UINT32)callback_ret);
+                ESP_LOGE(TAG, "Failed to (re-)set up frame callbacks: 0x%08" PRIx32, (UINT32)callback_ret);
             }
-            session->media_threads_started = TRUE;
-        } else {
-            ESP_LOGE(TAG, "Failed to set up media players: 0x%08" PRIx32, (UINT32)ret);
         }
     }
 

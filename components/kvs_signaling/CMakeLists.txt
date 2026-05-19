@@ -72,6 +72,17 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DKVS_PLAT_ESP_FREERTOS
 )
 
+# Propagate the CONFIG_PREFER_DYNAMIC_ALLOCS Kconfig to the un-prefixed
+# PREFER_DYNAMIC_ALLOCS source macro that the submodule's Include.h
+# checks (Include.h:1463). kvs_webrtc/CMakeLists.txt sets this directory-
+# globally via add_definitions(), but that does NOT cross into sibling
+# component builds — kvs_signaling needs its own target-level define so
+# LwsApiCallsESP.c uses the dynamic-payload path instead of the fixed
+# 2 KB static buffer (fatal on C5/C6 where SDP offers run > 5 KB).
+if(CONFIG_PREFER_DYNAMIC_ALLOCS)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC -DPREFER_DYNAMIC_ALLOCS=1)
+endif()
+
 # Suppress warnings for KVS code
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format

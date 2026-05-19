@@ -1226,7 +1226,6 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
                     CHK(FALSE, STATUS_INTERNAL_ERROR);
                 }
 
-
                 // All interfaces: create compatibility structure that wraps the interface session
                 pAppWebRTCSession = (PAppWebRTCSession) MEMCALLOC(1, SIZEOF(AppWebRTCSession));
                 CHK(pAppWebRTCSession != NULL, STATUS_NOT_ENOUGH_MEMORY);
@@ -1662,28 +1661,9 @@ WEBRTC_STATUS app_webrtc_init(app_webrtc_config_t *config)
         DLOGI("Audio player interface configured");
     }
 
-    // Register our event handler with the peer connection interface if available
-    if (config->peer_connection_if != NULL) {
-        // The register_event_handler function might not be implemented in all interfaces
-        // so we need to check if it exists before calling it
-        WEBRTC_STATUS (*register_event_handler_fn)(void *, void (*)(app_webrtc_event_t, UINT32, PCHAR, PCHAR)) = NULL;
-
-        // Get the function pointer from the interface struct
-        register_event_handler_fn = (WEBRTC_STATUS (*)(void *, void (*)(app_webrtc_event_t, UINT32, PCHAR, PCHAR)))
-            config->peer_connection_if->register_event_handler;
-
-        // TODO: pSampleConfiguration is not of type kvs_pc_client_t* which is what
-        // register_event_handler_fn expects
-        //
-        // if (register_event_handler_fn != NULL) {
-        //     DLOGI("Registering event handler with peer connection interface");
-        //     if (STATUS_FAILED(register_event_handler_fn(
-        //             (void*)pSampleConfiguration, raiseEvent))) {
-        //         DLOGE("Failed to register event handler with peer connection interface");
-        //         // Non-fatal error, continue initialization
-        //     }
-        // }
-    }
+    // TODO: Register event handler with peer connection interface
+    // Currently disabled because pSampleConfiguration is not of type kvs_pc_client_t*
+    // which is what register_event_handler expects.
 
     // Default: disable media reception (most IoT devices are senders)
     pSampleConfiguration->receive_media = FALSE;
@@ -2581,6 +2561,20 @@ static WEBRTC_STATUS app_webrtc_trigger_progressive_ice(const char* context, boo
             if (have_more) {
                 ESP_LOGD(TAG, "Progressive ICE: TURN servers will be fetched in background");
             }
+
+            /* If signaling returned no data and no more servers, explicitly clear
+             * ICE servers on the peer connection client. This lets the signaling
+             * layer control ICE policy (e.g. skip STUN/TURN for local LAN sessions)
+             * without app_webrtc needing to know about session locality. */
+            if (ice_data == NULL && !have_more) {
+                if (g_kvs_webrtc_client != NULL &&
+                    gWebRtcAppConfig.peer_connection_if != NULL &&
+                    gWebRtcAppConfig.peer_connection_if->set_ice_servers != NULL) {
+                    ESP_LOGI(TAG, "Progressive ICE: Signaling returned no ICE servers — clearing client config");
+                    gWebRtcAppConfig.peer_connection_if->set_ice_servers(g_kvs_webrtc_client, NULL, 0);
+                }
+            }
+
             // Free the data if allocated
             if (ice_data != NULL) {
                 SAFE_MEMFREE(ice_data);

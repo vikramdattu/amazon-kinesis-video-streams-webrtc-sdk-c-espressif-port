@@ -33,6 +33,7 @@ extern getTName globalGetThreadName;
 //
 // Thread and Mutex related functionality
 //
+extern createThreadEx globalCreateThreadEx;
 extern createThreadExExt globalCreateThreadExExt;
 extern createThreadExPri globalCreateThreadExPri;
 extern exitThread globalExitThread;

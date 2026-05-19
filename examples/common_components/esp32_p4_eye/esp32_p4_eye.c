@@ -837,7 +837,7 @@ esp_err_t bsp_pdm_audio_init(const i2s_pdm_rx_config_t *i2s_config)
         .tx_handle = NULL,
     };
     i2s_pdm_data_if = audio_codec_new_i2s_data(&i2s_cfg);
-    BSP_NULL_CHECK(i2s_pdm_data_if, NULL);
+    BSP_NULL_CHECK(i2s_pdm_data_if, ESP_FAIL);
 
     return ESP_OK;
 }

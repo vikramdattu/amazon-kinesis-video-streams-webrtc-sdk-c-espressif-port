@@ -57,7 +57,7 @@ typedef struct {
 } opus_encoder_data_t;
 
 static opus_encoder_data_t s_enc_data = {0};
-static volatile bool s_mic_muted = false;  /* TEMP: was true (push-to-talk via GPIO3) — unmuted by default so device-side audio TX flows without button press. Restore to true for production push-to-talk. */
+static volatile bool s_mic_muted = true;  /* Push-to-talk: muted by default; unmute only while the PTT button (GPIO3 on P4-EYE) is held. */
 
 #if CONFIG_IDF_TARGET_ESP32P4
 static esp_codec_dev_handle_t mic_codec_dev = NULL;

@@ -15,3 +15,13 @@ CONFIG_SLAVE_APPLICATION_ADDRESS=0x20000
 CONFIG_SLAVE_UART_RX_PIN=36
 CONFIG_SLAVE_UART_TX_PIN=35
 CONFIG_SLAVE_GPIO0_TRIGGER_PIN=33
+
+#
+# Video Player (receive path): decode incoming H.264 + render on the LCD.
+# CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER defaults to y on P4/S3 so no
+# explicit setting is needed. The render canvas is sized to min(display,
+# MAX_W/H); P4-EYE's 240x240 LCD means both end up at 240, but making
+# the cap explicit here saves readers from tracing the runtime min().
+#
+CONFIG_MEDIA_STREAM_PLAYER_MAX_WIDTH=240
+CONFIG_MEDIA_STREAM_PLAYER_MAX_HEIGHT=240

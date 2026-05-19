@@ -383,7 +383,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-#if 0 //def CONFIG_SLAVE_FLASHER_ENABLE
+#ifdef CONFIG_SLAVE_FLASHER_ENABLE
     s_original_vprintf = esp_log_set_vprintf(custom_vprintf);
 
     ret = flash_slave();

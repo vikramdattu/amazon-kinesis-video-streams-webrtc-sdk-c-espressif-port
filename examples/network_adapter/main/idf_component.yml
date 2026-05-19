@@ -4,3 +4,5 @@ dependencies:
   network_coprocessor:
     version: "*"
     path: ${KVS_SDK_PATH}/components/network_coprocessor
+  espressif/rmaker_common:
+    version: "*"

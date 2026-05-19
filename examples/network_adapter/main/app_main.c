@@ -11,6 +11,7 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_hosted_coprocessor.h"
+#include "esp_rmaker_common_console.h"
 
 void app_main(void)
 {
@@ -26,4 +27,6 @@ void app_main(void)
 
     /* Initialize network co-processor */
     esp_hosted_coprocessor_init();
+
+    esp_rmaker_common_console_init();
 }

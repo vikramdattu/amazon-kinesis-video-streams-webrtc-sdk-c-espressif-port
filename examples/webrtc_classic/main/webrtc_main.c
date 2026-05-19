@@ -282,8 +282,14 @@ void app_main(void)
 
 #ifdef CONFIG_ESP_P4_CORE_BOARD
     audio_capture = NULL;
-    video_player = NULL;
     audio_player = NULL;
+#endif
+
+#ifndef CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER
+    /* Receive-path player is opt-in. When disabled, the media_stream
+     * interface is a logging stub - do not wire it into app_webrtc so
+     * received video is simply dropped. */
+    video_player = NULL;
 #endif
 
     if (video_capture == NULL) {
@@ -337,11 +343,11 @@ void app_main(void)
     // Peer connection configuration - for full WebRTC functionality
     app_webrtc_config.peer_connection_if = kvs_peer_connection_if_get();
 
-    // Media interfaces for sending (optional - NULL for signaling-only)
+    // Media interfaces (NULL for signaling-only builds)
     app_webrtc_config.video_capture = video_capture;
     app_webrtc_config.audio_capture = audio_capture;
-    // app_webrtc_config.video_player = NULL;
-    app_webrtc_config.audio_player = audio_player;
+    app_webrtc_config.video_player  = video_player;   /* NULL when CONFIG_MEDIA_STREAM_ENABLE_VIDEO_PLAYER=n */
+    app_webrtc_config.audio_player  = audio_player;
 
     ESP_LOGI(TAG, "Initializing WebRTC Classic Example - Full KVS Integration");
     ESP_LOGI(TAG, "  - Architecture: app_webrtc + kvs_webrtc + kvs_signaling");

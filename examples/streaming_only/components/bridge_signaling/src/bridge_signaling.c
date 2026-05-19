@@ -55,7 +55,7 @@ static BridgeSignalingClientData* g_bridge_client = NULL;
  */
 void bridge_message_handler(const void* data, int len)
 {
-    ESP_LOGD(TAG, "bridge_message_handler called with %d bytes", len);
+    ESP_LOGI(TAG, "bridge_message_handler called with %d bytes", len);  // diag: trace each RX
 
     if (g_bridge_client == NULL || g_bridge_client->on_msg_received == NULL) {
         ESP_LOGW(TAG, "Bridge message received but no client or callback registered");
@@ -71,7 +71,7 @@ void bridge_message_handler(const void* data, int len)
         return;
     }
 
-    ESP_LOGD(TAG, "Deserialized message: type=%d, correlation_id=%s, peer_id=%s, payload_len=%d",
+    ESP_LOGI(TAG, "Deserialized message: type=%d, correlation_id=%s, peer_id=%s, payload_len=%d",
              (int) signaling_msg.messageType, signaling_msg.correlationId, signaling_msg.peerClientId, (int) signaling_msg.payloadLen);
 
     // If the message type is TRIGGER_OFFER, we need to trigger an offer

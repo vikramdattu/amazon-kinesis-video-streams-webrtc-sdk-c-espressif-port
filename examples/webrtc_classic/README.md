@@ -82,19 +82,29 @@ kvs_signaling_cfg.awsSessionToken = CONFIG_AWS_SESSION_TOKEN; // Set via menucon
 ```
 
 **Option B: IoT Core Certificates (Recommended)**
-```bash
-idf.py menuconfig
-# Navigate to: Component config → Amazon Web Services IoT →
-# Enable: CONFIG_IOT_CORE_ENABLE_CREDENTIALS
-```
-Then may also modify values in `main/webrtc_main.c` directly:
-```c
-kvs_signaling_cfg.iotCoreCredentialEndpoint = "your-endpoint.credentials.iot.us-east-1.amazonaws.com";
-kvs_signaling_cfg.iotCoreCert = "/spiffs/certs/certificate.pem";
-kvs_signaling_cfg.iotCorePrivateKey = "/spiffs/certs/private.key";
-kvs_signaling_cfg.iotCoreRoleAlias = "your_role_alias";
-kvs_signaling_cfg.iotCoreThingName = "your_thing_name";
-```
+
+1. Copy your IoT Core device certificate and private key into the SPIFFS image directory so they get packaged into the SPIFFS partition at flash time (available at `/spiffs/certs/` on the device):
+   ```bash
+   cp /path/to/your/certificate.pem ../app_common/spiffs_image/certs/certificate.pem
+   cp /path/to/your/private.key     ../app_common/spiffs_image/certs/private.key
+   ```
+   See [`examples/app_common/spiffs_image/certs/README.md`](../app_common/spiffs_image/certs/README.md) for the full list of expected files and how to generate them.
+
+2. Enable certificate-based credentials:
+   ```bash
+   idf.py menuconfig
+   # Navigate to: Component config → Amazon Web Services IoT →
+   # Enable: CONFIG_IOT_CORE_ENABLE_CREDENTIALS
+   ```
+
+3. (Optional) Override the defaults in `main/webrtc_main.c`:
+   ```c
+   kvs_signaling_cfg.iotCoreCredentialEndpoint = "your-endpoint.credentials.iot.us-east-1.amazonaws.com";
+   kvs_signaling_cfg.iotCoreCert = "/spiffs/certs/certificate.pem";
+   kvs_signaling_cfg.iotCorePrivateKey = "/spiffs/certs/private.key";
+   kvs_signaling_cfg.iotCoreRoleAlias = "your_role_alias";
+   kvs_signaling_cfg.iotCoreThingName = "your_thing_name";
+   ```
 
 **Option C: ESP RainMaker Integration (Advanced)**
 

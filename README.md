@@ -39,7 +39,9 @@ are also Apache-2.0 (see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)).
 
 ### Hardware Requirements
 - **Single Device**: ESP32, ESP32-S3, ESP32-C6 with camera/microphone
-- **Dual Device (Split Mode)**: ESP32-P4 Function EV Board (has both ESP32-P4 + ESP32-C6 onboard)
+- **Dual Device (Split Mode)**: [ESP32-P4 Function EV Board](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32p4/esp32-p4-function-ev-board/index.html)
+  (has both ESP32-P4 + ESP32-C6 onboard)
+- **Programmer** (split mode only): [ESP-Prog](https://docs.espressif.com/projects/esp-iot-solution/en/latest/hw-reference/ESP-Prog_guide.html) — used to flash and view the console on the on-board ESP32-C6 in split-mode setups
 - **Camera**: Supported modules via esp_video OR esp32-camera
 - **Network**: Wi-Fi connection with internet access
 
@@ -179,6 +181,7 @@ cd $IDF_PATH
 ### Install pkg-config
 
 ```bash
+sudo apt-get update
 sudo apt-get install pkg-config
 ```
 

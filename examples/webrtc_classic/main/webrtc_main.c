@@ -275,10 +275,25 @@ void app_main(void)
     }
 
     // Get the media capture interfaces for sending audio/video
+    /* On real ESP targets, capture frames live from camera + mic.
+     * In QEMU there's neither, so use the file-based capture path
+     * which loops through /spiffs/samples/frame-*.h264 (and the
+     * matching Opus frames for audio). Same media_stream_video_capture_t*
+     * shape — the rest of the WebRTC pipeline doesn't care where the
+     * frames came from. */
+#if CONFIG_APP_VIDEO_USE_FILE_FRAMES
+    media_stream_video_capture_t *video_capture = media_stream_get_file_video_capture_if();
+    media_stream_audio_capture_t *audio_capture = media_stream_get_file_audio_capture_if();
+    /* No playback in QEMU mode — we're a sender-only master. */
+    media_stream_video_player_t *video_player = NULL;
+    media_stream_audio_player_t *audio_player = NULL;
+    ESP_LOGI(TAG, "Video/audio capture: file-based (CONFIG_APP_VIDEO_USE_FILE_FRAMES=y)");
+#else
     media_stream_video_capture_t *video_capture = media_stream_get_video_capture_if();
     media_stream_audio_capture_t *audio_capture = media_stream_get_audio_capture_if();
     media_stream_video_player_t *video_player = media_stream_get_video_player_if();
     media_stream_audio_player_t *audio_player = media_stream_get_audio_player_if();
+#endif
 
 #ifdef CONFIG_ESP_P4_CORE_BOARD
     audio_capture = NULL;
@@ -367,6 +382,22 @@ void app_main(void)
     // app_webrtc_set_log_level(2);                                     // Enable DEBUG logging
     app_webrtc_enable_media_reception(true);                         // Enable receiving media
     // app_webrtc_set_ice_config(false, false);                         // Disable trickle ICE and TURN
+
+    /* Historical note: an earlier OpenETH/QEMU workaround called
+     * `app_webrtc_set_ice_config(true, false)` here to disable TURN
+     * because TURN allocation was timing out under slirp. That made
+     * sense only because the assumption was that host/srflx candidates
+     * would still work — they don't, slirp does outbound NAT only and
+     * the Python viewer running outside the guest can never reach the
+     * `10.0.2.15:N` host candidate. The correct fix is the opposite:
+     * force TURN-relay-only via CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y
+     * in `sdkconfig.defaults.qemu`, and let TURN actually allocate
+     * (which works through slirp now that mbedtls is in software-only
+     * mode). Disabling TURN at this layer would make the relay-only
+     * policy gather zero candidates and ICE would fail with
+     * STATUS_ICE_NO_CONNECTED_CANDIDATE_PAIR (0x5a00000d). Leaving
+     * `useTurn` at its default `true` so the Kconfig knob actually
+     * has effect. */
 
     ESP_LOGI(TAG, "Running WebRTC application");
 

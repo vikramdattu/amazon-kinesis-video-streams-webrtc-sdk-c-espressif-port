@@ -24,10 +24,27 @@ menu "App Common Configs (Wi-Fi, SD-Card, Camera)"
         help
             Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
 
+    config APP_NETWORK_USE_OPENETH
+        bool "Use OpenCores Ethernet instead of WiFi (for QEMU)"
+        default n
+        select ETH_USE_OPENETH
+        help
+            Drive networking through ESP-IDF's OpenCores Ethernet driver
+            instead of WiFi. The OpenCores ethmac is the network device
+            qemu-xtensa exposes for the esp32s3 machine type
+            (`-nic user,model=open_eth`). When enabled,
+            app_wifi_prov_init() skips WiFi/BLE provisioning entirely
+            and brings up an Ethernet netif with DHCP — same call site,
+            different transport, so every example using app_common
+            becomes QEMU-runnable for free.
+
+            Default off; set y only via sdkconfig.defaults.qemu so real
+            hardware builds keep using WiFi.
+
     config APP_NETWORK_PROV_BLE
         bool "Enable BLE provisioning for WiFi credentials"
         default n
-        depends on BT_ENABLED && BT_NIMBLE_ENABLED
+        depends on BT_ENABLED && BT_NIMBLE_ENABLED && !APP_NETWORK_USE_OPENETH
         help
             Enable BLE-based WiFi provisioning using the network_provisioning component.
             When enabled, if the device has no stored WiFi credentials, it will start

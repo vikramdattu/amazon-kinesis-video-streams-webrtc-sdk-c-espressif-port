@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+# SPDX-License-Identifier: Apache-2.0
+#
+# Overlay that flips linux_test to RELAY-only ICE policy. Used by the
+# `linux_test_kvs_relay` CI job as a probe: same code path as the
+# default linux_test_kvs (which uses host candidates and goes green),
+# but forced through TURN-over-TLS instead.
+#
+# Purpose — isolate the QEMU s3 / esp32 failure mode. The QEMU jobs
+# fail at TLS_ESP shutting down the TURN-over-TLS session ~4 s after
+# ICE pair selection, before DTLS can complete. We need to know
+# whether that's:
+#   (a) our SDK's TURN-over-TLS handling (would also break on Linux
+#       with this overlay), OR
+#   (b) QEMU/slirp + software-mbedtls combination (would NOT break
+#       on Linux native).
+#
+# Apply via SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.relay"
+# before `idf.py build`.
+
+CONFIG_KVS_WEBRTC_ICE_TRANSPORT_RELAY_ONLY=y

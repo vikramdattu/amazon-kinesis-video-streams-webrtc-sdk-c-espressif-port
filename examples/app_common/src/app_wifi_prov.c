@@ -20,6 +20,13 @@
 #include "network_provisioning/scheme_ble.h"
 #endif
 
+#if CONFIG_APP_NETWORK_USE_OPENETH
+#include "esp_eth.h"
+#include "esp_eth_mac.h"
+#include "esp_eth_phy.h"
+#include "esp_eth_netif_glue.h"
+#endif
+
 static const char *TAG = "app_wifi_prov";
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -39,7 +46,50 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
+#if CONFIG_APP_NETWORK_USE_OPENETH
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ESP_LOGI(TAG, "Got ETH IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+#endif
 }
+
+#if CONFIG_APP_NETWORK_USE_OPENETH
+/* Bring up the OpenCores Ethernet driver that qemu-xtensa exposes via
+ * `-nic user,model=open_eth`. Same WIFI_CONNECTED_BIT signalling as
+ * the WiFi path, so app_wifi_prov_wait_for_connection() works
+ * unchanged. The IP comes from QEMU's slirp DHCP. */
+static esp_err_t app_eth_init_openeth(void)
+{
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Failed to init netif");
+    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "Failed to create event loop");
+
+    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
+    ESP_RETURN_ON_FALSE(eth_netif != NULL, ESP_FAIL, TAG, "esp_netif_new(eth) failed");
+
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_config);
+    esp_eth_phy_t *phy = esp_eth_phy_new_dp83848(&phy_config);
+
+    esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth_handle = NULL;
+    ESP_RETURN_ON_ERROR(esp_eth_driver_install(&eth_config, &eth_handle), TAG, "eth driver install");
+    ESP_RETURN_ON_ERROR(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)),
+                        TAG, "esp_netif_attach");
+
+    /* Reuse the same wifi_event_handler — its IP_EVENT_ETH_GOT_IP arm
+     * sets WIFI_CONNECTED_BIT identically to the WiFi path. */
+    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                        &wifi_event_handler, NULL, NULL), TAG, "ETH IP event handler");
+
+    ESP_RETURN_ON_ERROR(esp_eth_start(eth_handle), TAG, "esp_eth_start");
+    ESP_LOGI(TAG, "OpenCores Ethernet up; waiting for DHCP from slirp");
+    return ESP_OK;
+}
+#endif
 
 #if CONFIG_APP_NETWORK_PROV_BLE
 static void prov_event_handler(void *user_data, network_prov_cb_event_t event, void *event_data)
@@ -150,6 +200,17 @@ esp_err_t app_wifi_prov_init(const app_wifi_prov_config_t *config)
     }
 
     s_wifi_event_group = xEventGroupCreate();
+
+#if CONFIG_APP_NETWORK_USE_OPENETH
+    /* QEMU path: OpenCores Ethernet via slirp instead of WiFi. The
+     * WIFI_CONNECTED_BIT semantics + wait helper work the same; from
+     * the example's point of view nothing else changes. */
+    ESP_RETURN_ON_ERROR(app_eth_init_openeth(), TAG, "OpenETH init failed");
+    if (cfg.wifi_connect_timeout_ms > 0) {
+        return app_wifi_prov_wait_for_connection(cfg.wifi_connect_timeout_ms);
+    }
+    return ESP_OK;
+#endif
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Failed to init netif");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "Failed to create event loop");

@@ -1,0 +1,19 @@
+## IDF Component Manager Manifest File
+##
+## Linux-target equivalent of webrtc_classic. Only components whose APIs
+## main.c directly calls are listed here — kvs_utils, libsrtp2,
+## esp_usrsctp, libwebsockets, state_machine, credential all flow
+## transitively through these four.
+dependencies:
+  app_webrtc:
+    path: ${KVS_SDK_PATH}/components/app_webrtc
+    version: "*"
+  kvs_webrtc:
+    path: ${KVS_SDK_PATH}/components/kvs_webrtc
+    version: "*"
+  kvs_signaling:
+    path: ${KVS_SDK_PATH}/components/kvs_signaling
+    version: "*"
+  esp_webrtc_utils:
+    path: ${KVS_SDK_PATH}/components/esp_webrtc_utils
+    version: "*"

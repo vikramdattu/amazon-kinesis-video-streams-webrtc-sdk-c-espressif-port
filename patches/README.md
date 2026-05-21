@@ -31,6 +31,9 @@ cd ..
 | 0002 | SDP renegotiation: apply remote offer to transceiver directions and mark removed tracks inactive | aligned | [awslabs#2214](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2214) |
 | 0003 | Network.c: Changes to support ESP-IDF | ESP-specific | n/a |
 | 0004 | ESP-IDF platform adaptations and robustness improvements | mixed | partial: [awslabs#2146](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2146) for the `PREFER_DYNAMIC_ALLOCS` portion |
+| 0007 | IDF Linux target build support | aligned (candidate) | follow-up PR to awslabs once docker-test stabilises |
+| 0008 | Signaling: fix payload pointer clobber under DYNAMIC_SIGNALING_PAYLOAD | aligned | rolls in with [awslabs#2146](https://github.com/awslabs/amazon-kinesis-video-streams-webrtc-sdk-c/pull/2146) |
+| 0009 | TLS: resolve KVS_CA_CERT_PATH at runtime on host builds | ESP-specific (host-build glue) | n/a |
 
 > **Removed (absorbed upstream or dropped):**
 >
@@ -46,6 +49,11 @@ cd ..
 >   `awslabs/main` (no `%llu` remains in `tst/`); the leftover C89 loop and
 >   clang-format bits aren't worth a separate upstream PR. Our CI doesn't
 >   run upstream tests anyway.
+> - `0010 — PeerConnection: only accept the sha-256 a=fingerprint line` was
+>   absorbed upstream in the SDK submodule bump to `bb106510cf` — the same
+>   SHA-256 filter (with the same aiortc rationale) is now present in
+>   `setRemoteDescription` for both session-level and media-level fingerprint
+>   loops.
 
 ### Notes per patch
 

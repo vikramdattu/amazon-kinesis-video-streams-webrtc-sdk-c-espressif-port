@@ -1,0 +1,85 @@
+From 2a93cf8d4d877b350f4092158409fba72a3b2ffa Mon Sep 17 00:00:00 2001
+From: Vikram Dattu <vikram.dattu@espressif.com>
+Date: Thu, 30 Apr 2026 05:25:29 +0530
+Subject: [PATCH] TLS: resolve KVS_CA_CERT_PATH at runtime on host builds
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`Tls_mbedtls.c::readAndParseCACertificate` is the CA-bundle loader
+used by the TURN-over-TLS path (TurnConnection → Tls_mbedtls). It
+hardcodes the bundle location to the compile-time `KVS_CA_CERT_PATH`
+macro, which our `kvs_utils/include/platform_esp32.h` defaults to
+`/spiffs/certs/cacert.pem`. On the IDF Linux target there is no
+SPIFFS, so `readFile` returns `STATUS_OPEN_FILE_FAILED` (0x9), TURN
+moves to `TURN_STATE_FAILED`, no relay candidate is allocated, and
+ICE nomination times out at 30 s with
+`STATUS_ICE_FAILED_TO_NOMINATE_CANDIDATE_PAIR (0x5a000013)`.
+
+Add a small host-side fallback: when not building for an ESP target,
+try `KVS_CA_CERT_PATH` env var first, then probe a short list of
+common system-bundle locations (Debian/Ubuntu CI, macOS, Fedora /
+RHEL). Fully no-op on real ESP targets — the original compile-time
+path is still used there. The signaling-layer TLS already takes a
+runtime `caCertPath`; this is the matching escape hatch for TURN.
+---
+ src/source/Crypto/Tls_mbedtls.c | 37 +++++++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/src/source/Crypto/Tls_mbedtls.c b/src/source/Crypto/Tls_mbedtls.c
+index 3394a085b7..b2cd3f696c 100644
+--- a/src/source/Crypto/Tls_mbedtls.c
++++ b/src/source/Crypto/Tls_mbedtls.c
+@@ -12,14 +12,47 @@ PRIVATE_API STATUS readAndParseCACertificate(PTlsSession pTlsSession)
+     UINT64 cert_len = 0;
+     PBYTE cert_buf = NULL;
+     CHAR errBuf[128];
++    /* `KVS_CA_CERT_PATH` is a compile-time string baked at SDK build
++     * time. On the IDF Linux target there is no SPIFFS — let runtime
++     * env override the bundle location and try a few common host
++     * paths if neither the env var nor the compile-time path exist.
++     * The signaling-layer TLS already takes a runtime `caCertPath`;
++     * this is the matching escape hatch for the TURN-over-TLS path
++     * (TurnConnection → Tls_mbedtls). */
++    PCHAR caPath = (PCHAR) KVS_CA_CERT_PATH;
++#if defined(CONFIG_IDF_TARGET_LINUX) || (!defined(ESP_PLATFORM) && !defined(__XTENSA__))
++    {
++        const char* env = getenv("KVS_CA_CERT_PATH");
++        if (env != NULL && *env != '\0') {
++            caPath = (PCHAR) env;
++        } else {
++            static const char* const candidates[] = {
++                "/etc/ssl/certs/ca-certificates.crt", /* Debian / Ubuntu (CI) */
++                "/etc/ssl/cert.pem",                  /* macOS LibreSSL */
++                "/etc/pki/tls/certs/ca-bundle.crt",   /* Fedora / RHEL */
++                NULL,
++            };
++            UINT64 probeLen = 0;
++            if (readFile(caPath, FALSE, NULL, &probeLen) != STATUS_SUCCESS || probeLen == 0) {
++                for (size_t i = 0; candidates[i] != NULL; ++i) {
++                    probeLen = 0;
++                    if (readFile((PCHAR) candidates[i], FALSE, NULL, &probeLen) == STATUS_SUCCESS && probeLen > 0) {
++                        caPath = (PCHAR) candidates[i];
++                        break;
++                    }
++                }
++            }
++        }
++    }
++#endif
+ 
+     CHK(pTlsSession != NULL, STATUS_NULL_ARG);
+ 
+-    CHK_STATUS(readFile(KVS_CA_CERT_PATH, FALSE, NULL, &cert_len));
++    CHK_STATUS(readFile(caPath, FALSE, NULL, &cert_len));
+     CHK(cert_len > 0, STATUS_INVALID_CERT_PATH_LENGTH);
+     cert_buf = (PBYTE) MEMCALLOC(1, cert_len + 1);
+     CHK(cert_buf != NULL, STATUS_NOT_ENOUGH_MEMORY);
+-    CHK_STATUS(readFile(KVS_CA_CERT_PATH, FALSE, cert_buf, &cert_len));
++    CHK_STATUS(readFile(caPath, FALSE, cert_buf, &cert_len));
+     int ret = mbedtls_x509_crt_parse(&pTlsSession->cacert, cert_buf, (SIZE_T) (cert_len + 1));
+     if (ret != 0) {
+         mbedtls_strerror(ret, errBuf, SIZEOF(errBuf));
+-- 
+2.39.5 (Apple Git-154)
+

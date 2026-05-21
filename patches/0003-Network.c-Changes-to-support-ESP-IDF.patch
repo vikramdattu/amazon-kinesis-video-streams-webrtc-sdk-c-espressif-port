@@ -1,7 +1,7 @@
-From a6d896522ed975c005728cf00ad1478a8615a86c Mon Sep 17 00:00:00 2001
+From bf8308dd61e20c9e8e103a90108acce87819bcb7 Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Tue, 10 Dec 2024 14:30:14 +0530
-Subject: [PATCH 4/6] Network.c: Changes to support ESP-IDF
+Subject: [PATCH 3/4] Network.c: Changes to support ESP-IDF
 
  - Added ifaddr altenate for ESP-IDF
  - Created abstracted API for IDF_CMAKE platform to query local IP

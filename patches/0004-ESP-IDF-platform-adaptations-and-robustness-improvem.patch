@@ -1,7 +1,7 @@
-From f754e6d3233dab7317bb2af72ee6cb9064b3ab0d Mon Sep 17 00:00:00 2001
+From 7c3be477c3f40ad9ec58e63218857be21b5f8563 Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Tue, 3 Mar 2026 20:48:28 +0530
-Subject: [PATCH 5/6] ESP-IDF platform adaptations and robustness improvements
+Subject: [PATCH 4/4] ESP-IDF platform adaptations and robustness improvements
 
 - Dtls_mbedtls: Fix for mbedtls 3.x compatibility
 - ConnectionListener: Custom thread for ESP platforms to save memory
@@ -23,7 +23,7 @@ Subject: [PATCH 5/6] ESP-IDF platform adaptations and robustness improvements
  9 files changed, 416 insertions(+), 83 deletions(-)
 
 diff --git a/src/include/com/amazonaws/kinesis/video/webrtcclient/Include.h b/src/include/com/amazonaws/kinesis/video/webrtcclient/Include.h
-index aba5050042..ff1865b3de 100644
+index 9f0659726d..4b2b04122f 100644
 --- a/src/include/com/amazonaws/kinesis/video/webrtcclient/Include.h
 +++ b/src/include/com/amazonaws/kinesis/video/webrtcclient/Include.h
 @@ -647,7 +647,7 @@ extern "C" {
@@ -50,7 +50,7 @@ index aba5050042..ff1865b3de 100644
  
  /**
   * Env to set minimum number of threads in the threadpool for the KVS SDK
-@@ -1450,6 +1450,21 @@ typedef struct {
+@@ -1510,6 +1510,21 @@ typedef struct {
                                                                //!<
  } RtcIceCandidateInit, *PRtcIceCandidateInit;
  
@@ -72,7 +72,7 @@ index aba5050042..ff1865b3de 100644
  /**
   * @brief Structure defining the basic signaling message
   */
-@@ -1464,7 +1479,11 @@ typedef struct {
+@@ -1524,7 +1539,11 @@ typedef struct {
  
      UINT32 payloadLen; //!< Optional payload length. If 0, the length will be calculated
  
@@ -85,15 +85,16 @@ index aba5050042..ff1865b3de 100644
  
  /**
 diff --git a/src/source/Crypto/Dtls_mbedtls.c b/src/source/Crypto/Dtls_mbedtls.c
-index ece9acf328..0710c4d517 100644
+index 3ee9ce8d9f..6f7fc92a51 100644
 --- a/src/source/Crypto/Dtls_mbedtls.c
 +++ b/src/source/Crypto/Dtls_mbedtls.c
-@@ -327,12 +327,12 @@ STATUS dtlsSessionStart(PDtlsSession pDtlsSession, BOOL isServer)
+@@ -480,13 +480,13 @@ STATUS dtlsSessionStart(PDtlsSession pDtlsSession, BOOL isServer)
  
      CHK(mbedtls_ssl_setup(&pDtlsSession->sslCtx, &pDtlsSession->sslCtxConfig) == 0, STATUS_SSL_CTX_CREATION_FAILED);
      mbedtls_ssl_set_mtu(&pDtlsSession->sslCtx, DEFAULT_MTU_SIZE_BYTES);
 -    mbedtls_ssl_set_bio(&pDtlsSession->sslCtx, pDtlsSession, dtlsSessionSendCallback, dtlsSessionReceiveCallback, NULL);
 +    mbedtls_ssl_set_bio(&pDtlsSession->sslCtx, pDtlsSession, (mbedtls_ssl_send_t*)(void*)dtlsSessionSendCallback, (mbedtls_ssl_recv_t*)(void*)dtlsSessionReceiveCallback, NULL);
+     CHK_STATUS(dtlsSessionConfigureExpectedServerHostname(pDtlsSession, isServer));
  
  #if !MBEDTLS_BEFORE_V3
      mbedtls_ssl_set_export_keys_cb(&pDtlsSession->sslCtx, dtlsSessionKeyDerivationCallback, pDtlsSession);
@@ -133,10 +134,10 @@ index cc1d64d45c..a06834e573 100644
  CleanUp:
  
 diff --git a/src/source/Ice/SocketConnection.c b/src/source/Ice/SocketConnection.c
-index e04a718aa9..d896c73e6c 100644
+index 797a4a430e..a8b5939040 100644
 --- a/src/source/Ice/SocketConnection.c
 +++ b/src/source/Ice/SocketConnection.c
-@@ -544,8 +544,9 @@ STATUS socketSendDataWithRetry(PSocketConnection pSocketConnection, PBYTE buf, U
+@@ -552,8 +552,9 @@ STATUS socketSendDataWithRetry(PSocketConnection pSocketConnection, PBYTE buf, U
                      DLOGE("poll() failed with errno %s", getErrorString(getErrorCode()));
                      break;
                  }
@@ -148,7 +149,7 @@ index e04a718aa9..d896c73e6c 100644
                  /* fatal error from send() */
                  DLOGE("sendto() socket %d failed with errno %s(%d)", pSocketConnection->localSocket, getErrorString(errorNum), errorNum);
 diff --git a/src/source/Ice/SocketConnection.h b/src/source/Ice/SocketConnection.h
-index 404f0dd524..004329ceb0 100644
+index 3f7f433332..404ae0fd59 100644
 --- a/src/source/Ice/SocketConnection.h
 +++ b/src/source/Ice/SocketConnection.h
 @@ -11,10 +11,10 @@ extern "C" {

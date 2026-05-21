@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
+# SPDX-License-Identifier: Apache-2.0
+#
+# Phase 2 tier 1: build-only smoke for examples/webrtc_classic on
+# ESP32-S3. Catches toolchain drift, link errors, and missing component
+# deps as the SDK evolves.
+#
+# What we tried beyond build-only (2026-04-29, locally):
+#   `idf.py qemu` against examples/webrtc_classic on esp32s3.
+#   - QEMU starts cleanly. Espressif's qemu-xtensa esp_develop_9.2.2.
+#   - ROM bootloader runs: `ESP-ROM:esp32s3-20210327`, reset cause +
+#     boot mode reported, SPI flash configured, three load segments
+#     loaded into RAM, jumps to entry 0x403c8948.
+#   - Then silence. Second-stage bootloader produces no UART output.
+#   - Most likely cause: octal-PSRAM init hangs (QEMU runs with
+#     `-global driver=ssi_psram,property=is_octal,value=true`; the
+#     example enables SPIRAM in sdkconfig.defaults.esp32s3).
+#   - Disabling SPIRAM or adding a `sdkconfig.defaults.qemu` overlay
+#     would likely get further. Tracked as Phase 2 tier 2 in Athena
+#     (node 221a811a).
+#
+# So tier 1 stays build-only — that catches the meaningful regressions
+# (toolchain, link, dep graph) and is reproducible in CI without flaky
+# QEMU peripherals.
+#
+# Build context = espressif-port repo root, see GH workflow.
+
+ARG IDF_TAG=release-v5.5
+FROM espressif/idf:${IDF_TAG}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /work
+
+COPY . /work/sdk-repo/
+
+ENV KVS_SDK_PATH=/work/sdk-repo
+
+WORKDIR /work/sdk-repo/examples/webrtc_classic
+
+RUN . /opt/esp/idf/export.sh \
+    && idf.py set-target esp32s3 \
+    && idf.py build
+
+RUN mkdir -p /artifacts && \
+    cp build/webrtc_classic.elf build/webrtc_classic.bin /artifacts/ 2>/dev/null || true
+
+CMD ["bash", "-c", "ls -la /artifacts && echo 'esp32s3 build smoke OK'"]

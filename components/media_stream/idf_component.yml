@@ -2,7 +2,7 @@ dependencies:
   espressif/esp32-camera:
     version: ^2.0.2
     rules:
-      - if: "target not in [esp32p4]"
+      - if: "target not in [esp32p4, linux]"
 
   espressif/esp_video:
     version: "~1.4.0"
@@ -17,9 +17,13 @@ dependencies:
 
   espressif/esp_audio_codec:
     version: "*"
+    rules:
+      - if: "target != linux"
 
   espressif/esp_codec_dev:
     version: "*"
+    rules:
+      - if: "target != linux"
 
   # BSP component from component manager
   espressif/esp32_p4_function_ev_board:

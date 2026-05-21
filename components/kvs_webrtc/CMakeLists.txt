@@ -81,11 +81,18 @@ else()
     message(STATUS "Using direct mbedTLS for KVS TLS sessions")
 endif()
 
-set(requires "mbedtls" "lwip" "esp_timer" "nvs_flash" "freertos" "esp_system" "heap" "driver" "spi_flash" "esp_http_client" "app_webrtc" "kvs_utils" "libsrtp2" "esp_usrsctp")
+# Base set of REQUIRES that exist on every supported target (real ESP +
+# IDF Linux target). ESP-only ones are appended below.
+set(register_requires
+    "mbedtls" "lwip" "esp_timer" "nvs_flash" "freertos" "esp_system" "heap" "esp_http_client"
+)
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND register_requires "esp_wifi" "driver" "spi_flash")
+endif()
 
 # Add ESP-TLS dependency if using ESP-TLS implementation
 if(CONFIG_USE_ESP_TLS_FOR_KVS)
-    list(APPEND requires esp-tls)
+    list(APPEND register_requires "esp-tls")
 endif()
 
 idf_component_register(
@@ -97,17 +104,7 @@ idf_component_register(
 
     PRIV_INCLUDE_DIRS "${KVS_WEBRTC_ROOT}/src/source"
 
-    REQUIRES "mbedtls"
-             "lwip"
-             "esp_timer"
-             "esp_wifi"
-             "nvs_flash"
-             "freertos"
-             "esp_system"
-             "heap"
-             "driver"
-             "spi_flash"
-             "esp_http_client"
+    REQUIRES "${register_requires}"
 )
 
 # option(ENABLE_KVS_THREADPOOL "Enable support for KVS thread pool in signaling" OFF)
@@ -148,17 +145,42 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DESP_PLATFORM
     -DAWS_IOT_SDK
     -DKVS_PLAT_ESP
-    -DLWS_WITH_CUSTOM_HEADERS
+    # LWS_WITH_CUSTOM_HEADERS is already provided by libwebsockets'
+    # generated lws_config.h (it's `option(... ON)` upstream).
     -DENABLE_STREAMING
     -DKVS_USE_PLATFORM_TYPES
     -DKVS_PLAT_ESP_FREERTOS
+    # ABI parity for `SignalingMessage`. Upstream KVS SDK's
+    # `webrtcclient/Include.h` defines that struct two different ways
+    # depending on whether `DYNAMIC_SIGNALING_PAYLOAD` is set:
+    #
+    #   #ifdef DYNAMIC_SIGNALING_PAYLOAD
+    #     PCHAR payload;                       /* pointer */
+    #   #else
+    #     CHAR payload[MAX_SIGNALING_MESSAGE_LEN + 1];  /* 18 KB inline */
+    #   #endif
+    #
+    # `kvs_utils/include/common_defs.h` declares the macro, so any TU
+    # that includes `common_defs.h` first (our `kvs_signaling`,
+    # `kvs_webrtc`, `app_webrtc` sources) sees the pointer layout. The
+    # upstream KVS SDK source files in `src/source/...` only `#include
+    # "../Include_i.h"` → straight to the upstream `Include.h` without
+    # `common_defs.h`, so they see the inline-array layout. Same struct,
+    # two layouts in different translation units → KVS SDK writes the
+    # incoming JSON into `payload[0..N]`, which lands on top of the
+    # `payload` *pointer field* the consumer reads, giving a "pointer"
+    # whose bytes spell `{"candi...` and segfaulting in
+    # `deserializeSessionDescriptionInit` on first deref.
+    #
+    # Forcing the macro PUBLICly here pins the layout to the pointer
+    # form for every TU compiled against this component.
+    -DDYNAMIC_SIGNALING_PAYLOAD=1
 )
 
-# Add definitions for usrsctp
-target_compile_definitions(${COMPONENT_LIB} PUBLIC
-    -DHAVE_SCONN_LEN=1
-    -DSCTP_USE_LWIP=1
-    -DSCTP_USE_RTOS=1
+# Add definitions for usrsctp. SCTP_USE_LWIP / SCTP_USE_RTOS / HAVE_SCONN_LEN
+# are ESP-only; on the Linux IDF target usrsctp uses POSIX sockets +
+# pthreads directly via its userspace path.
+set(_sctp_defs
     -DSCTP_SIMPLE_ALLOCATOR
     -D__Userspace__
     -DINET=1
@@ -166,6 +188,14 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DSCTP_USE_IPV6=0
     -DSCTP_USE_MBEDTLS_SHA1=1
 )
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND _sctp_defs
+        -DHAVE_SCONN_LEN=1
+        -DSCTP_USE_LWIP=1
+        -DSCTP_USE_RTOS=1
+    )
+endif()
+target_compile_definitions(${COMPONENT_LIB} PUBLIC ${_sctp_defs})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=format
@@ -194,11 +224,10 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-maybe-uninitialized
 )
 
-# Add definitions for usrsctp
-add_definitions(
-  "-DHAVE_SCONN_LEN=1"
-  "-DSCTP_USE_LWIP=1"
-  "-DSCTP_USE_RTOS=1"
+# Same set, directory-scoped — kept in sync with the
+# target_compile_definitions block above for parity with the older
+# build system. Linux drops the lwip/RTOS bits.
+set(_sctp_dir_defs
   "-DSCTP_SIMPLE_ALLOCATOR"
   "-D__Userspace__"
   "-DINET=1"
@@ -206,6 +235,14 @@ add_definitions(
   "-DSCTP_USE_IPV6=0"
   "-DSCTP_USE_MBEDTLS_SHA1=1"
 )
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND _sctp_dir_defs
+      "-DHAVE_SCONN_LEN=1"
+      "-DSCTP_USE_LWIP=1"
+      "-DSCTP_USE_RTOS=1"
+    )
+endif()
+add_definitions(${_sctp_dir_defs})
 
 if (CONFIG_PREFER_DYNAMIC_ALLOCS)
     add_definitions(-DPREFER_DYNAMIC_ALLOCS=1)

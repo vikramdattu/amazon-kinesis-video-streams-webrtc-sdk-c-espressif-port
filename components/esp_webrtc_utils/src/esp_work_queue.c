@@ -139,8 +139,27 @@ esp_err_t esp_work_queue_start(void)
     /* Create the task with the appropriate stack and buffer */
     esp_err_t ret = ESP_OK;
     if (queue_config.prefer_ext_ram) {
-        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
-        task_stack = heap_caps_malloc_prefer(queue_config.stack_size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL);
+        /* FreeRTOS's xTaskCreateStatic takes `usStackDepth` in stack
+         * *words*, not bytes — and `prvInitialiseNewTask` `memset`s the
+         * whole buffer based on `usStackDepth * sizeof(StackType_t)`.
+         * On Espressif IDF FreeRTOS ports `StackType_t == uint8_t`, so
+         * stack_size happens to be in bytes and the buffer alloc below
+         * matches. On the IDF Linux target the upstream FreeRTOS Linux
+         * port defines `StackType_t = unsigned long` (8 bytes on a
+         * 64-bit host), so a `stack_size`-byte allocation is 8× too
+         * small and `prvInitialiseNewTask` clobbers ~224 KB past the
+         * end — silently corrupting whatever the heap allocator hands
+         * out next, with crashes that surface much later in unrelated
+         * code (signaling, peer connection, …).
+         *
+         * Allocate `stack_size * sizeof(StackType_t)` so the buffer
+         * always matches what FreeRTOS will actually fill. */
+        const size_t stack_bytes = (size_t) queue_config.stack_size * sizeof(StackType_t);
+        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        /* TCB must be in byte-accessible internal DRAM — esp32's
+         * xPortCheckValidTCBMem rejects 32-bit-only IRAM regions
+         * that MALLOC_CAP_INTERNAL alone can hand back. */
+        task_stack = heap_caps_malloc_prefer(stack_bytes, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         assert(task_buffer && task_stack);
 
         /* the task never exits, so do not bother to free the buffers */

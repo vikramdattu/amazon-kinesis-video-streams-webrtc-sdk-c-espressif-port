@@ -42,8 +42,12 @@ set(component_requires
 
 set(component_priv_requires
     "esp_netif"
-    "esp_wifi"
 )
+# esp_wifi is ESP-only; on Linux we use the host's networking stack
+# and have no provisioning to drive.
+if(NOT IDF_TARGET STREQUAL "linux")
+    list(APPEND component_priv_requires "esp_wifi")
+endif()
 
 idf_component_register(
     SRCS
@@ -66,10 +70,21 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     -DESP_PLATFORM
     -DAWS_IOT_SDK
     -DKVS_PLAT_ESP
-    -DLWS_WITH_CUSTOM_HEADERS
+    # LWS_WITH_CUSTOM_HEADERS is already provided by libwebsockets'
+    # generated lws_config.h (it's `option(... ON)` upstream).
     -DENABLE_STREAMING
     -DKVS_USE_PLATFORM_TYPES
     -DKVS_PLAT_ESP_FREERTOS
+    # Must match the kvs_webrtc component's setting — see the long
+    # comment there. The KVS SDK signaling-layer source files
+    # (`Signaling.c`, `LwsApiCalls.c`, `Client.c`, `StateMachine.c`,
+    # `FileCache.c`, `ChannelInfo.c`) are compiled here, and they all
+    # touch `SignalingMessage`. Without this macro they see the inline
+    # 18 KB `payload[]` layout while the rest of our code (which
+    # picks the macro up from `kvs_utils/include/common_defs.h`) sees
+    # the pointer layout — same struct, two ABIs, instant heap
+    # corruption on the first received message.
+    -DDYNAMIC_SIGNALING_PAYLOAD=1
 )
 
 # Suppress warnings for KVS code

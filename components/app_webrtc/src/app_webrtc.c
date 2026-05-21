@@ -15,8 +15,6 @@
 #include "filelogger.h"
 #include "fileio.h"
 
-#include "media_stream.h"
-
 #include "sdkconfig.h"
 #include "esp_log.h"
 
@@ -1090,15 +1088,17 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
     STATUS retStatus = STATUS_SUCCESS;
     PSampleConfiguration pSampleConfiguration = (PSampleConfiguration) HANDLE_TO_POINTER(customData);
 
-    CHK(pSampleConfiguration != NULL, STATUS_NULL_ARG);
-
-    // Normal processing (bridge mode is handled in wrapper, never reaches here)
+    /* Initialize all CleanUp-touched locals before the first CHK so the
+     * goto path doesn't read uninitialized memory. Apple Clang flagged
+     * this under -Wsometimes-uninitialized; GCC happens to suppress it. */
     BOOL peerConnectionFound = FALSE, locked = FALSE, freeStreamingSession = FALSE;
     UINT32 clientIdHash;
     UINT64 hashValue = 0;
     PPendingMessageQueue pPendingMessageQueue = NULL;
     PAppWebRTCSession pAppWebRTCSession = NULL;
     webrtc_message_t* pWebRtcMessageCopy = NULL;
+
+    CHK(pSampleConfiguration != NULL, STATUS_NULL_ARG);
 
     MUTEX_LOCK(pSampleConfiguration->sampleConfigurationObjLock);
     locked = TRUE;
@@ -1207,8 +1207,11 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
                 /* Progressive ICE Optimization:
                  * Trigger non-blocking ICE server refresh using progressive mechanism
                  * This gets STUN servers immediately and triggers background TURN fetching
+                 * (when useTurn is enabled). Honour the configured policy so
+                 * `app_webrtc_set_ice_config(..., use_turn=false)` actually
+                 * suppresses TURN fetching.
                  */
-                app_webrtc_trigger_progressive_ice("new session", true);
+                app_webrtc_trigger_progressive_ice("new session", pSampleConfiguration->useTurn);
 
                 // Use pluggable interface
                 void* session_handle = NULL;
@@ -1302,9 +1305,10 @@ STATUS signalingMessageReceived(UINT64 customData, webrtc_message_t* pWebRtcMess
                       pWebRtcMessage->peer_client_id);
 
                 /* Progressive ICE Optimization:
-                 * Trigger non-blocking ICE server refresh for answer processing
+                 * Trigger non-blocking ICE server refresh for answer processing.
+                 * Honour the configured useTurn policy.
                  */
-                app_webrtc_trigger_progressive_ice("answer processing", true);
+                app_webrtc_trigger_progressive_ice("answer processing", pSampleConfiguration->useTurn);
 
                 // Use the message directly since it's already in the right format
                 message_status = pc_interface->send_message(pAppWebRTCSession->interface_session_handle, pWebRtcMessage);
@@ -1943,11 +1947,23 @@ WEBRTC_STATUS app_webrtc_run(void)
 
     /* Check if we need to allocate or reuse existing buffers */
     if (task_buffer == NULL) {
-        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
+        /* TCB must be in byte-accessible internal DRAM — esp32's
+         * xPortCheckValidTCBMem rejects 32-bit-only IRAM regions
+         * that MALLOC_CAP_INTERNAL alone can hand back. */
+        task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
 
     if (task_stack == NULL) {
-        task_stack = heap_caps_calloc_prefer(1, WEBRTC_TASK_STACK_SIZE, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL);
+        /* xTaskCreateStatic takes usStackDepth in stack *words*; the
+         * static buffer must hold `usStackDepth * sizeof(StackType_t)`
+         * bytes. ESP-IDF's xtensa/riscv FreeRTOS port defines
+         * `StackType_t = uint8_t` so byte-sized allocations work. The
+         * IDF Linux target uses upstream FreeRTOS Linux port where
+         * `StackType_t = unsigned long` (8 bytes on a 64-bit host); a
+         * byte-sized buffer is 8× too small and `prvInitialiseNewTask`
+         * runs `memset` past the end, silently corrupting the heap. */
+        const size_t stack_bytes = (size_t) WEBRTC_TASK_STACK_SIZE * sizeof(StackType_t);
+        task_stack = heap_caps_calloc_prefer(1, stack_bytes, 2, MALLOC_CAP_SPIRAM, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
 
     if (!task_buffer || !task_stack) {
@@ -2132,9 +2148,10 @@ int app_webrtc_trigger_offer(char *pPeerId)
         }
 
         /* Progressive ICE Optimization:
-         * Trigger non-blocking ICE server refresh for offer creation
+         * Trigger non-blocking ICE server refresh for offer creation.
+         * Honour the configured useTurn policy.
          */
-        app_webrtc_trigger_progressive_ice("offer creation", true);
+        app_webrtc_trigger_progressive_ice("offer creation", pSampleConfiguration->useTurn);
 
         // Use pluggable interface
         void* session_handle = NULL;

@@ -268,10 +268,26 @@ STATUS defaultCreateThreadPriWithCaps(PTID pThreadId, PCHAR threadName, UINT32 t
         pthread_attr_setdetachstate(pAttr, PTHREAD_CREATE_DETACHED);
     }
     DLOGD("pthread_attr_setdetachstate finished");
-    if (threadSize == 0) {
-        pthread_attr_setstacksize(pAttr, DEFAULT_THREAD_SIZE);
-    } else {
-        pthread_attr_setstacksize(pAttr, threadSize);
+    {
+        size_t stack_to_use = (threadSize == 0) ? DEFAULT_THREAD_SIZE : threadSize;
+#if defined(CONFIG_IDF_TARGET_LINUX)
+        /* On the IDF Linux target the FreeRTOS port maps each task to
+         * a host pthread. KVS SDK call sites request 16–48 KB stacks
+         * (sized for xtensa/rv32 RTOS); on a 64-bit host the same code
+         * paths consume noticeably more stack (8-byte pointers, larger
+         * varargs frames, glibc/lws library-internal frames, and any
+         * sanitizer instrumentation), so 16 KB threads overflow within
+         * the first lws/signaling round-trip. Bump every thread to at
+         * least 512 KB on Linux — host RAM is plentiful, no downside.
+         * Tracked by FOLLOWUP #7d: drop this once we either (a) audit
+         * each call site for an explicit Linux-fit size, or (b) wire
+         * up a Kconfig knob for the multiplier. */
+        const size_t kLinuxMinStack = 512 * 1024;
+        if (stack_to_use < kLinuxMinStack) {
+            stack_to_use = kLinuxMinStack;
+        }
+#endif
+        pthread_attr_setstacksize(pAttr, stack_to_use);
     }
 
     DLOGD("pthread_attr_setstacksize finished");

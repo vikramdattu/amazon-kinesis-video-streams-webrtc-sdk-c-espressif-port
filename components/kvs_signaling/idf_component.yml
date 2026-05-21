@@ -3,7 +3,10 @@ dependencies:
   idf:
     version: ">=4.4.0"
   ## Required IDF components
-  esp_websocket_client: "*"
+  esp_websocket_client:
+    version: "*"
+    rules:
+      - if: "target != linux"
 
   libwebsockets:
     path: ../libwebsockets

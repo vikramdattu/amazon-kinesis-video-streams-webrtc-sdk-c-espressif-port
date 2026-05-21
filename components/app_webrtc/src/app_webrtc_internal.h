@@ -17,7 +17,6 @@
 /* Application includes */
 #include "app_webrtc.h"
 #include "app_webrtc_if.h"
-#include "media_stream.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -137,8 +136,6 @@ typedef struct {
     void* audio_capture;                        /* Audio capture interface */
     void* video_player;                         /* Video player interface */
     void* audio_player;                         /* Audio player interface */
-    video_player_handle_t video_player_handle;  /* Video player handle */
-    audio_player_handle_t audio_player_handle;  /* Audio player handle */
     uint32_t activePlayerSessionCount;          /* Active player session count */
     MUTEX playerLock;                           /* Player synchronization */
     bool receive_media;                         /* Media reception flag */

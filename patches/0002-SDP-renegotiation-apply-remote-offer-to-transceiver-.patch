@@ -1,7 +1,7 @@
-From 1a8cb615e718d4ce27610afd28b79d23b27237d3 Mon Sep 17 00:00:00 2001
+From 8bec1bc3f6df0d0f907223731a53e35d70432aca Mon Sep 17 00:00:00 2001
 From: Vikram Dattu <vikram.dattu@espressif.com>
 Date: Tue, 17 Feb 2026 22:55:40 +0530
-Subject: [PATCH 2/4] SDP renegotiation: apply remote offer to transceiver
+Subject: [PATCH 2/2] SDP renegotiation: apply remote offer to transceiver
  directions and mark removed tracks inactive
 
  - Apply findTransceiversByRemoteDescription in setRemoteDescription (answerer)
@@ -49,10 +49,10 @@ index 4c4ab2d169..4bf23346e7 100644
          DLOGD("REMOTE_SDP:%s\n", pSessionDescriptionInit->sdp);
      }
 diff --git a/src/source/PeerConnection/Rtp.c b/src/source/PeerConnection/Rtp.c
-index 79d5d1f9e3..2b2b8e1eba 100644
+index 00ea9d3314..9b5c0b549d 100644
 --- a/src/source/PeerConnection/Rtp.c
 +++ b/src/source/PeerConnection/Rtp.c
-@@ -288,6 +288,10 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
+@@ -310,6 +310,10 @@ STATUS writeFrame(PRtcRtpTransceiver pRtcRtpTransceiver, PFrame pFrame)
  
      CHK(pKvsRtpTransceiver != NULL && pFrame != NULL, STATUS_NULL_ARG);
      pKvsPeerConnection = pKvsRtpTransceiver->pKvsPeerConnection;
@@ -64,7 +64,7 @@ index 79d5d1f9e3..2b2b8e1eba 100644
      if (MEDIA_STREAM_TRACK_KIND_VIDEO == pKvsRtpTransceiver->sender.track.kind) {
          frames++;
 diff --git a/src/source/PeerConnection/SessionDescription.c b/src/source/PeerConnection/SessionDescription.c
-index 79802321bb..ca30ece8d0 100644
+index 1fa51f27b9..a0f56c6603 100644
 --- a/src/source/PeerConnection/SessionDescription.c
 +++ b/src/source/PeerConnection/SessionDescription.c
 @@ -355,6 +355,7 @@ STATUS setTransceiverPayloadTypes(PHashTable codecTable, PHashTable rtxTable, PD
@@ -75,7 +75,7 @@ index 79802321bb..ca30ece8d0 100644
                  continue;
              }
  
-@@ -1347,6 +1348,39 @@ CleanUp:
+@@ -1354,6 +1355,39 @@ CleanUp:
      return retStatus;
  }
  
@@ -115,7 +115,7 @@ index 79802321bb..ca30ece8d0 100644
  // primarily used for creating a list of transceivers corresponding to each media m-line to respond to an offer with an answer
  // This function generates the pAnswerTransceivers list which contains transceivers corresponding to each m-line in correct order
  // To generate this list, it traverses over each m-line, first checks if it has a user-created transceiver present using findCodecInTransceivers
-@@ -1367,11 +1401,12 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+@@ -1374,11 +1408,12 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
      PCHAR attributeValue, end, codecs = NULL;
      PCHAR rtpMapValue = NULL;
      CHAR firstCodec[MAX_PAYLOAD_TYPE_LENGTH];
@@ -130,7 +130,7 @@ index 79802321bb..ca30ece8d0 100644
      PRtcMediaStreamTrack pRtcMediaStreamTrack;
      RtcMediaStreamTrack track;
      PDoubleListNode pCurNode = NULL;
-@@ -1544,6 +1579,63 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
+@@ -1559,6 +1594,63 @@ STATUS findTransceiversByRemoteDescription(PKvsPeerConnection pKvsPeerConnection
          }
      }
  
